@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Card, Button, ModelSelectModal, ManualConfigModal } from "@/shared/components";
 import Image from "next/image";
 import BaseUrlSelect from "./BaseUrlSelect";
@@ -19,6 +19,11 @@ export default function CopilotToolCard({ tool, isExpanded, onToggle, baseUrl, a
   const [showManualConfigModal, setShowManualConfigModal] = useState(false);
   const [selectedModels, setSelectedModels] = useState([]);
   const [modalOpen, setModalOpen] = useState(false);
+  const selectedModelsRef = useRef([]);
+
+  useEffect(() => {
+    selectedModelsRef.current = selectedModels;
+  }, [selectedModels]);
 
   useEffect(() => {
     if (apiKeys?.length > 0 && !selectedApiKey) {
@@ -31,11 +36,10 @@ export default function CopilotToolCard({ tool, isExpanded, onToggle, baseUrl, a
   }, [initialStatus]);
 
   useEffect(() => {
-    if (isExpanded && !status) {
-      checkStatus();
+    if (isExpanded) {
+      if (!status) checkStatus();
       fetchModelAliases();
     }
-    if (isExpanded) fetchModelAliases();
   }, [isExpanded]);
 
   // Pre-fill from existing config
@@ -55,6 +59,21 @@ export default function CopilotToolCard({ tool, isExpanded, onToggle, baseUrl, a
       if (res.ok) setModelAliases(data.aliases || {});
     } catch (error) {
       console.log("Error fetching model aliases:", error);
+    }
+  };
+
+  const saveModels = async (models) => {
+    try {
+      const keyToUse = (selectedApiKey && selectedApiKey.trim())
+        ? selectedApiKey
+        : (!cloudEnabled ? "sk_9router" : selectedApiKey);
+      await fetch("/api/cli-tools/copilot-settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ baseUrl: getEffectiveBaseUrl(), apiKey: keyToUse, models }),
+      });
+    } catch (error) {
+      console.log("Error saving models:", error);
     }
   };
 
@@ -164,7 +183,7 @@ export default function CopilotToolCard({ tool, isExpanded, onToggle, baseUrl, a
       <div className="flex items-start justify-between gap-3 hover:cursor-pointer sm:items-center" onClick={onToggle}>
         <div className="flex min-w-0 items-center gap-3">
           <div className="size-8 flex items-center justify-center shrink-0">
-            <Image src="/providers/copilot.png" alt={tool.name} width={32} height={32} className="size-8 object-contain rounded-lg" sizes="32px" onError={(e) => { e.target.style.display = "none"; }} />
+            <Image src="/providers/copilot.png" alt={tool.name} width={32} height={32} className="size-8 object-contain rounded-lg" sizes="32px" onError={(e) => { e.target.style.display = "none"; }} loading="lazy" decoding="async" />
           </div>
           <div className="min-w-0">
             <div className="flex min-w-0 flex-wrap items-center gap-2">
@@ -270,20 +289,29 @@ export default function CopilotToolCard({ tool, isExpanded, onToggle, baseUrl, a
         </div>
       )}
 
-      <ModelSelectModal
-        isOpen={modalOpen}
-        onClose={() => setModalOpen(false)}
-        onSelect={(model) => {
-          if (!selectedModels.includes(model.value)) {
-            setSelectedModels([...selectedModels, model.value]);
-          }
-          setModalOpen(false);
-        }}
-        selectedModel={null}
-        activeProviders={activeProviders}
-        modelAliases={modelAliases}
-        title="Add Model for GitHub Copilot"
-      />
+      {modalOpen && (
+        <ModelSelectModal
+          isOpen={modalOpen}
+          onClose={() => {
+            setModalOpen(false);
+            saveModels(selectedModelsRef.current);
+          }}
+          onSelect={(model) => {
+            if (!selectedModels.includes(model.value)) {
+              setSelectedModels([...selectedModels, model.value]);
+            }
+          }}
+          onDeselect={(model) => {
+            setSelectedModels(selectedModels.filter(m => m !== model.value));
+          }}
+          selectedModel={null}
+          activeProviders={activeProviders}
+          modelAliases={modelAliases}
+          addedModelValues={selectedModels}
+          closeOnSelect={false}
+          title="Add Model for GitHub Copilot"
+        />
+      )}
 
       <ManualConfigModal
         isOpen={showManualConfigModal}
