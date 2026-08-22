@@ -46,6 +46,12 @@ const NAV_STRUCTURE = [
     ]
   },
   {
+    key: "forkExtensions",
+    items: [
+      { key: "viewerPortal", slug: "fork/viewer-portal" }
+    ]
+  },
+  {
     key: "help",
     items: [
       { key: "troubleshooting", slug: "troubleshooting" },
@@ -80,6 +86,8 @@ const TRANSLATIONS = {
     deployment: "Deployment",
     localhost: "Localhost",
     cloud: "Cloud (VPS/Docker)",
+    forkExtensions: "Fork Extensions",
+    viewerPortal: "Viewer Portal",
     help: "Help",
     troubleshooting: "Troubleshooting",
     faq: "FAQ",
@@ -111,6 +119,8 @@ const TRANSLATIONS = {
     deployment: "Triển khai",
     localhost: "Localhost",
     cloud: "Cloud (VPS/Docker)",
+    forkExtensions: "Tiện ích mở rộng của fork",
+    viewerPortal: "Cổng người xem",
     help: "Trợ giúp",
     troubleshooting: "Khắc phục sự cố",
     faq: "Câu hỏi thường gặp",
@@ -142,6 +152,8 @@ const TRANSLATIONS = {
     deployment: "部署",
     localhost: "本地",
     cloud: "云端 (VPS/Docker)",
+    forkExtensions: "分支扩展",
+    viewerPortal: "查看者门户",
     help: "帮助",
     troubleshooting: "故障排查",
     faq: "常见问题",
@@ -173,6 +185,8 @@ const TRANSLATIONS = {
     deployment: "Despliegue",
     localhost: "Localhost",
     cloud: "Nube (VPS/Docker)",
+    forkExtensions: "Extensiones del fork",
+    viewerPortal: "Portal de visualización",
     help: "Ayuda",
     troubleshooting: "Solución de problemas",
     faq: "Preguntas frecuentes",
@@ -204,6 +218,8 @@ const TRANSLATIONS = {
     deployment: "デプロイ",
     localhost: "ローカル",
     cloud: "クラウド (VPS/Docker)",
+    forkExtensions: "フォーク拡張",
+    viewerPortal: "閲覧者ポータル",
     help: "ヘルプ",
     troubleshooting: "トラブルシューティング",
     faq: "よくある質問",

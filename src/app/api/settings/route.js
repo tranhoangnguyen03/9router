@@ -12,12 +12,14 @@ const SETTINGS_RESPONSE_HEADERS = {
 };
 
 // Secrets must never be mass-assigned from request body (CWE-915)
-const PROTECTED_SETTING_KEYS = ["password", "mitmSudoEncrypted"];
+const PROTECTED_SETTING_KEYS = ["password", "mitmSudoEncrypted", "forkExtensions", "viewerPortal"];
 
 export async function GET() {
   try {
     const settings = await getSettings();
     const { password, oidcClientSecret, ...safeSettings } = settings;
+    delete safeSettings.forkExtensions;
+    delete safeSettings.viewerPortal;
     safeSettings.oidcConfigured = !!(safeSettings.oidcIssuerUrl && safeSettings.oidcClientId && oidcClientSecret);
     
     const enableRequestLogs = process.env.ENABLE_REQUEST_LOGS === "true";
@@ -109,6 +111,8 @@ export async function PATCH(request) {
     }
 
     const { password, oidcClientSecret, ...safeSettings } = settings;
+    delete safeSettings.forkExtensions;
+    delete safeSettings.viewerPortal;
     safeSettings.oidcConfigured = !!(safeSettings.oidcIssuerUrl && safeSettings.oidcClientId && oidcClientSecret);
     return NextResponse.json(safeSettings, { headers: SETTINGS_RESPONSE_HEADERS });
   } catch (error) {
