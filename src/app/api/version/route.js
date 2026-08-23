@@ -53,6 +53,10 @@ async function getLatestVersionCached() {
 }
 
 export async function GET() {
+  if (process.env.NINEROUTER_MANAGED_DEPLOYMENT === "true") {
+    return Response.json({ currentVersion: pkg.version, latestVersion: null, hasUpdate: false, managedDeployment: true });
+  }
+
   const latestVersion = await getLatestVersionCached();
   const currentVersion = pkg.version;
   const hasUpdate = latestVersion ? compareVersions(latestVersion, currentVersion) > 0 : false;
