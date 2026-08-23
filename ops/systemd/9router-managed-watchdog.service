@@ -1,0 +1,9 @@
+[Unit]
+Description=Managed 9router container health watchdog
+After=docker.service network-online.target
+Wants=docker.service network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/9router/bin/9routerctl watchdog
+User=root
