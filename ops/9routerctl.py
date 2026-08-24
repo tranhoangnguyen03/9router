@@ -37,6 +37,7 @@ PROD_CONTAINER = "9router-prod"
 CANDIDATE_CONTAINER = "9router-candidate"
 CANDIDATE_PROXY = "9router-candidate-proxy"
 CANDIDATE_NETWORK = "9router-candidate-internal"
+CANDIDATE_PROXY_NETWORK = "9router-candidate-publish"
 TEST_IMAGE = "9router-managed-tests"
 VIEWER_TESTS = [
     "unit/managed-deployment.test.js",
@@ -297,7 +298,8 @@ def remove_container(name: str) -> None:
 def stop_candidate() -> None:
     remove_container(CANDIDATE_PROXY)
     remove_container(CANDIDATE_CONTAINER)
-    run(["docker", "network", "rm", CANDIDATE_NETWORK], check=False, capture=True)
+    for network in (CANDIDATE_NETWORK, CANDIDATE_PROXY_NETWORK):
+        run(["docker", "network", "rm", network], check=False, capture=True)
 
 
 def chown_tree(path: Path, uid: int = 1000, gid: int = 1000) -> None:
@@ -386,6 +388,10 @@ def start_candidate(image: str, data: Path, port: int = 20130) -> None:
     stop_candidate()
     chown_tree(data)
     run(["docker", "network", "create", "--internal", CANDIDATE_NETWORK])
+    run([
+        "docker", "network", "create", "--opt",
+        "com.docker.network.bridge.enable_ip_masquerade=false", CANDIDATE_PROXY_NETWORK,
+    ])
     app_args = [
         "docker", "run", "-d", "--name", CANDIDATE_CONTAINER,
         "--network", CANDIDATE_NETWORK,
@@ -408,11 +414,12 @@ def start_candidate(image: str, data: Path, port: int = 20130) -> None:
         + '");c.pipe(u).pipe(c);u.on("error",()=>c.destroy())}).listen(20130,"0.0.0.0")'
     )
     run([
-        "docker", "create", "--name", CANDIDATE_PROXY, "--no-healthcheck", "--network", CANDIDATE_NETWORK,
+        "docker", "create", "--name", CANDIDATE_PROXY, "--no-healthcheck", "--network", CANDIDATE_PROXY_NETWORK,
         *container_security_args(restart="no", memory="1g"),
         "--user", "1000:1000", "--entrypoint", "node",
         "-p", f"127.0.0.1:{port}:20130", image, "-e", proxy_code,
     ])
+    run(["docker", "network", "connect", CANDIDATE_NETWORK, CANDIDATE_PROXY])
     run(["docker", "start", CANDIDATE_PROXY])
     wait_http(f"http://127.0.0.1:{port}/api/health")
     wait_portal(f"http://127.0.0.1:{port}/api/viewer-portal/public", data / "db/data.sqlite")
@@ -454,7 +461,8 @@ def finalize_candidate(candidate: dict, *, metadata_path: Path | None = None) ->
             raise RuntimeError("candidate is not running and has no recorded successful health check")
         remove_container(CANDIDATE_PROXY)
         remove_container(CANDIDATE_CONTAINER)
-        run(["docker", "network", "rm", CANDIDATE_NETWORK], check=False, capture=True)
+        for network in (CANDIDATE_NETWORK, CANDIDATE_PROXY_NETWORK):
+            run(["docker", "network", "rm", network], check=False, capture=True)
         wait_database_closed(source)
         require_storage([(source.parent, database_storage_bytes(source) + 128 * 1024 * 1024)], "candidate finalization")
         manifest = backup_database(source, finalized)
@@ -1105,8 +1113,9 @@ def cleanup_plan() -> list[tuple[str, Path | str]]:
         for name in (CANDIDATE_PROXY, CANDIDATE_CONTAINER):
             if docker_exists(name):
                 actions.append(("remove-container", name))
-        if run(["docker", "network", "inspect", CANDIDATE_NETWORK], check=False, capture=True).returncode == 0:
-            actions.append(("remove-network", CANDIDATE_NETWORK))
+        for network in (CANDIDATE_NETWORK, CANDIDATE_PROXY_NETWORK):
+            if run(["docker", "network", "inspect", network], check=False, capture=True).returncode == 0:
+                actions.append(("remove-network", network))
 
     keep_candidate_dir = Path(candidate_meta["data"]).parent if pending_candidate else None
     if CANDIDATES.exists():

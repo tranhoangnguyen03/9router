@@ -65,7 +65,7 @@ class OpsTests(unittest.TestCase):
         ):
             self.assertIn(required, joined)
 
-    def test_candidate_proxy_starts_directly_on_internal_network(self):
+    def test_candidate_proxy_uses_non_masquerading_publish_network(self):
         calls = []
         with tempfile.TemporaryDirectory() as tmp, \
              patch.object(CTL, "stop_candidate"), \
@@ -76,8 +76,11 @@ class OpsTests(unittest.TestCase):
              patch.object(CTL, "wait_models"):
             CTL.start_candidate("image", Path(tmp))
         proxy_create = next(call for call in calls if call[:2] == ["docker", "create"])
-        self.assertIn(CTL.CANDIDATE_NETWORK, proxy_create)
-        self.assertFalse(any(call[:3] == ["docker", "network", "connect"] for call in calls))
+        self.assertIn(CTL.CANDIDATE_PROXY_NETWORK, proxy_create)
+        self.assertNotIn("none", proxy_create)
+        self.assertTrue(any(call[:3] == ["docker", "network", "connect"] for call in calls))
+        proxy_network = next(call for call in calls if call[:3] == ["docker", "network", "create"] and CTL.CANDIDATE_PROXY_NETWORK in call)
+        self.assertIn("com.docker.network.bridge.enable_ip_masquerade=false", proxy_network)
 
     def test_live_permissions_precreate_viewer_session_secret_without_exposing_ops(self):
         with tempfile.TemporaryDirectory() as tmp:
