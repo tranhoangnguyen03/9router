@@ -173,6 +173,8 @@ class OpsTests(unittest.TestCase):
                 self.assertEqual(current["imageId"], "new")
                 self.assertEqual(previous["kind"], "systemd")
                 self.assertTrue((Path(tmp) / "state.json").exists())
+                self.assertFalse((Path(tmp) / "current.json").exists())
+                self.assertFalse((Path(tmp) / "previous.json").exists())
             finally:
                 CTL.RELEASES = old_releases
 
@@ -193,6 +195,35 @@ class OpsTests(unittest.TestCase):
             previous = {"kind": "systemd"}
             CTL.recover_release(previous, backup)
         self.assertEqual(calls, ["stop", ("restore", backup), ("start", previous)])
+
+    def test_candidate_finalization_freezes_wal_aware_database_and_removes_mutable_copy(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            data = Path(tmp) / "candidate" / "data"
+            data.joinpath("db").mkdir(parents=True)
+            database = data / "db/data.sqlite"
+            db = sqlite3.connect(database)
+            db.execute("pragma journal_mode=wal")
+            db.execute("create table state(value text)")
+            db.execute("insert into state values('tested')")
+            db.commit(); db.close()
+            candidate = {"data": str(data), "imageId": "sha256:image", "healthPassedAt": "now"}
+            with patch.object(CTL, "docker_exists", return_value=False), \
+                 patch.object(CTL, "remove_container"), \
+                 patch.object(CTL, "wait_database_closed"):
+                frozen = CTL.finalize_candidate(candidate)
+            artifact = Path(frozen["finalizedDatabase"])
+            self.assertTrue(artifact.exists())
+            self.assertFalse(data.exists())
+            self.assertEqual(CTL.inspect_database(artifact)["sha256"], frozen["database"]["sha256"])
+            db = sqlite3.connect(artifact)
+            self.assertEqual(db.execute("select value from state").fetchone()[0], "tested")
+            db.close()
+
+    def test_database_close_check_fails_closed_when_lsof_errors(self):
+        completed = type("Result", (), {"returncode": 2, "stdout": "", "stderr": "failure"})()
+        with patch.object(CTL, "run", return_value=completed):
+            with self.assertRaisesRegex(RuntimeError, "lsof failed"):
+                CTL.wait_database_closed(timeout=0.01)
 
 
 if __name__ == "__main__":

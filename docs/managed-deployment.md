@@ -9,7 +9,7 @@ sudo 9routerctl update
 sudo 9routerctl status
 ```
 
-`update` fetches the fork, refuses an upstream version the fork has not incorporated, runs the focused tests as a non-root disposable container, builds a pinned image, and starts a snapshot-backed candidate on `127.0.0.1:20130`. It does not modify production.
+`update` fetches the fork, refuses an upstream version the fork has not incorporated, runs the focused tests as a non-root disposable container, builds a pinned image, updates the installed control plane, and starts a snapshot-backed candidate on `127.0.0.1:20130`. It does not modify production. A previous candidate's Viewer Portal configuration is carried into its replacement automatically.
 
 Validate the candidate, then promote it during an approved cutover:
 
@@ -23,7 +23,7 @@ The first promotion also needs explicit approval to copy the already-tested View
 sudo 9routerctl promote --confirm-cutover --apply-candidate-portal-config
 ```
 
-Promotion stops every legacy/managed watchdog and writer, verifies the database is closed, creates a final verified backup, starts the managed container, checks private and public health, and only then enables the managed systemd watchdog. A failed promotion automatically restores the final backup and restarts the previous release.
+Promotion first stops and freezes the tested candidate into an immutable WAL-aware database artifact. It then stops every legacy/managed watchdog and production writer, verifies the live database is closed, creates a final verified backup, starts the managed container, checks private/public health, the Viewer Portal endpoint, and authenticated model listing, and only then enables the managed systemd watchdog. A failed promotion automatically restores the final backup and restarts the previous release.
 
 ## Roll back
 
