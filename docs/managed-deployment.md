@@ -23,7 +23,13 @@ sudo 9routerctl status
 
 `update` fetches the fork, refuses an upstream version the fork has not incorporated, runs the focused tests as a non-root disposable container, builds a pinned image, updates the installed control plane, and starts a snapshot-backed candidate on `127.0.0.1:20130`. It does not modify production. A previous candidate's Viewer Portal configuration is carried into its replacement automatically.
 
-Validate the candidate, then promote it during an approved cutover:
+Validate the candidate, then run all slow database and artifact checks while production remains online:
+
+```bash
+sudo ionice -c3 nice -n 10 9routerctl preflight
+```
+
+The preflight expires after one hour. Review `9routerctl status`, then promote during an separately approved cutover:
 
 ```bash
 sudo 9routerctl promote --confirm-cutover
@@ -35,7 +41,7 @@ The first promotion also needs explicit approval to copy the already-tested View
 sudo 9routerctl promote --confirm-cutover --apply-candidate-portal-config
 ```
 
-Promotion first stops and freezes the tested candidate into an immutable WAL-aware database artifact. It then journals each durable cutover phase, stops every legacy/managed watchdog and production writer, verifies the live database is closed, creates a final verified backup, starts the managed container, checks private/public health, the exact Viewer Portal response, and a non-empty authenticated model listing, and only then enables the managed systemd watchdog. A failed or interrupted promotion is recovered from the journal automatically; the boot-time recovery service provides the same protection after a reboot.
+Preflight freezes the tested candidate and performs slow integrity checks without stopping production. Promotion refuses to run without a fresh matching preflight. The cutover then journals each durable phase, stops every legacy/managed watchdog and production writer, verifies the live database is closed, makes a fast durable copy of the checkpointed database, and starts the managed container. It prints timestamped progress and reports the exact customer-impact interval. Portal, authenticated model, and full backup verification continue after public traffic is restored. A failed or interrupted promotion is recovered from the journal automatically; the boot-time recovery service provides the same protection after a reboot.
 
 ## Roll back
 

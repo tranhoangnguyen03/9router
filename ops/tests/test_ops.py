@@ -156,6 +156,19 @@ class OpsTests(unittest.TestCase):
         args = CTL.parser().parse_args(["promote", "--confirm-cutover", "--apply-candidate-portal-config"])
         self.assertTrue(args.apply_candidate_portal_config)
 
+    def test_preflight_is_a_separate_non_cutover_command(self):
+        args = CTL.parser().parse_args(["preflight"])
+        self.assertEqual(args.command, "preflight")
+
+    def test_preflight_artifact_identity_detects_changes_without_rehashing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            artifact = Path(tmp) / "candidate.sqlite"
+            artifact.write_bytes(b"frozen")
+            identity = CTL.artifact_identity(artifact)
+            self.assertTrue(CTL.artifact_unchanged(artifact, identity))
+            artifact.write_bytes(b"changed")
+            self.assertFalse(CTL.artifact_unchanged(artifact, identity))
+
     def test_portal_transfer_requires_approval_and_valid_api_key_references(self):
         with tempfile.TemporaryDirectory() as tmp:
             source, target = Path(tmp) / "candidate.sqlite", Path(tmp) / "live.sqlite"

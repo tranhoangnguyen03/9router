@@ -16,7 +16,7 @@ import subprocess
 import sys
 import time
 import urllib.request
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 CONTROL_ROOT = Path(os.environ.get("NINEROUTER_CONTROL_ROOT", "/opt/9router"))
@@ -28,6 +28,7 @@ RELEASES = CONTROL_ROOT / "releases"
 LOCK_FILE = Path(os.environ.get("NINEROUTER_LOCK", "/run/lock/9router-deploy.lock"))
 WATCHDOG_STATE = Path(os.environ.get("NINEROUTER_WATCHDOG_STATE", "/run/9router-managed-watchdog.failures"))
 OPERATION_FILE = RELEASES / "operation.json"
+PREFLIGHT_FILE = RELEASES / "preflight.json"
 LEGACY_WATCHDOG_UNIT = Path("/etc/systemd/system/9router-watchdog.timer")
 LEGACY_WATCHDOG_SOURCE = LIVE_DATA / "ops/watchdog.timer"
 LEGACY_WATCHDOG_WANTS = Path("/etc/systemd/system/timers.target.wants/9router-watchdog.timer")
@@ -91,6 +92,45 @@ def database_metadata(db: sqlite3.Connection) -> dict:
         if table in tables:
             counts[table] = db.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0]
     return {"schemaVersion": schema, "counts": counts}
+
+
+def progress(message: str) -> None:
+    print(f"[{datetime.now(timezone.utc).isoformat()}] {message}", flush=True)
+
+
+def artifact_identity(path: Path) -> dict:
+    stat = path.stat()
+    return {"path": str(path), "bytes": stat.st_size, "mtimeNs": stat.st_mtime_ns, "inode": stat.st_ino}
+
+
+def artifact_unchanged(path: Path, identity: dict) -> bool:
+    try:
+        return artifact_identity(path) == identity
+    except FileNotFoundError:
+        return False
+
+
+def database_health(path: Path) -> dict:
+    db = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=60)
+    try:
+        check = db.execute("pragma quick_check").fetchone()[0]
+        if check != "ok":
+            raise RuntimeError(f"database quick_check failed: {check}")
+        metadata = database_metadata(db)
+    finally:
+        db.close()
+    metadata.update({"file": str(path), "bytes": path.stat().st_size, "quickCheck": "ok"})
+    return metadata
+
+
+def database_summary(path: Path) -> dict:
+    db = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=60)
+    try:
+        metadata = database_metadata(db)
+    finally:
+        db.close()
+    metadata.update({"file": str(path), "bytes": path.stat().st_size})
+    return metadata
 
 
 def inspect_database(path: Path) -> dict:
@@ -886,6 +926,91 @@ def portal_change(source: Path, target: Path) -> tuple[str, str]:
         target_db.close()
 
 
+def preflight() -> dict:
+    require_root()
+    candidate_path = RELEASES / "candidate.json"
+    if not candidate_path.exists():
+        raise RuntimeError("no tested candidate metadata found")
+    candidate = read_json(candidate_path)
+    if not candidate.get("finalizedDatabase"):
+        progress("Preflight 1/6: freezing candidate; production remains online (several minutes expected).")
+        candidate = finalize_candidate(candidate, metadata_path=candidate_path)
+    else:
+        progress("Preflight 1/6: candidate is already frozen.")
+    candidate_db = candidate_database(candidate)
+
+    progress("Preflight 2/6: verifying frozen candidate database; production remains online.")
+    checked_candidate = inspect_database(candidate_db)
+    if checked_candidate["sha256"] != candidate.get("database", {}).get("sha256"):
+        raise RuntimeError("candidate database changed after finalization")
+    if database_portal_digest(candidate_db) != candidate.get("portalDigest"):
+        raise RuntimeError("candidate portal configuration changed after finalization")
+    if image_id(candidate["image"]) != candidate["imageId"]:
+        raise RuntimeError("candidate image identity changed")
+
+    progress("Preflight 3/6: checking live database integrity; production remains online.")
+    live_health = database_health(LIVE_DATA / "db/data.sqlite")
+    before, after = portal_change(candidate_db, LIVE_DATA / "db/data.sqlite")
+
+    progress("Preflight 4/6: checking storage and recovery services.")
+    live_size = database_storage_bytes(LIVE_DATA / "db/data.sqlite")
+    require_storage([
+        (BACKUPS, live_size * 2 + 128 * 1024 * 1024),
+        (LIVE_DATA, live_size + 128 * 1024 * 1024),
+    ], "safe promotion and automatic rollback")
+    if not is_enabled("9router-managed-recovery.service"):
+        raise RuntimeError("boot-time deployment recovery service is not enabled")
+    if not url_ok("https://ai-router.davidustranus.space/api/health"):
+        raise RuntimeError("production public health is not ready")
+
+    progress("Preflight 5/6: recording immutable candidate and controller identity.")
+    result = {
+        "createdAt": datetime.now(timezone.utc).isoformat(),
+        "expiresAt": (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(),
+        "candidateGitSha": candidate.get("gitSha"),
+        "candidateImageId": candidate["imageId"],
+        "candidatePortalDigest": candidate["portalDigest"],
+        "candidateArtifact": artifact_identity(candidate_db),
+        "controllerSha256": sha256(Path(__file__)),
+        "portalTransferRequired": before != after,
+        "liveDatabase": live_health,
+        "publicHealth": True,
+    }
+    write_json(PREFLIGHT_FILE, result)
+    progress("Preflight 6/6: complete. No production process was stopped or modified.")
+    return result
+
+
+def validated_preflight(candidate: dict, apply_candidate_portal_config: bool) -> tuple[dict, Path]:
+    if not PREFLIGHT_FILE.exists():
+        raise RuntimeError("cutover preflight is missing; run 9routerctl preflight first")
+    checked = read_json(PREFLIGHT_FILE)
+    expires = datetime.fromisoformat(checked["expiresAt"])
+    if datetime.now(timezone.utc) > expires:
+        raise RuntimeError("cutover preflight expired; run 9routerctl preflight again")
+    candidate_db = candidate_database(candidate)
+    if not candidate.get("finalizedDatabase") or not artifact_unchanged(candidate_db, checked["candidateArtifact"]):
+        raise RuntimeError("frozen candidate changed after preflight")
+    if candidate.get("gitSha") != checked.get("candidateGitSha") or candidate.get("imageId") != checked.get("candidateImageId"):
+        raise RuntimeError("candidate metadata changed after preflight")
+    if sha256(Path(__file__)) != checked.get("controllerSha256"):
+        raise RuntimeError("deployment controller changed after preflight")
+    if database_portal_digest(candidate_db) != checked.get("candidatePortalDigest"):
+        raise RuntimeError("candidate portal configuration changed after preflight")
+    if checked.get("portalTransferRequired") and not apply_candidate_portal_config:
+        raise RuntimeError("portal configuration differs; pass --apply-candidate-portal-config to transfer it")
+    if not is_enabled("9router-managed-recovery.service"):
+        raise RuntimeError("boot-time deployment recovery service is not enabled")
+    if not url_ok("https://ai-router.davidustranus.space/api/health"):
+        raise RuntimeError("production public health is not ready")
+    live_size = database_storage_bytes(LIVE_DATA / "db/data.sqlite")
+    require_storage([
+        (BACKUPS, live_size * 2 + 128 * 1024 * 1024),
+        (LIVE_DATA, live_size + 128 * 1024 * 1024),
+    ], "safe promotion and automatic rollback")
+    return checked, candidate_db
+
+
 def promote(confirm: bool, apply_candidate_portal_config: bool = False) -> dict:
     require_root()
     if not confirm:
@@ -899,22 +1024,9 @@ def promote(confirm: bool, apply_candidate_portal_config: bool = False) -> dict:
         candidate_path = RELEASES / "candidate.json"
         if not candidate_path.exists():
             raise RuntimeError("no tested candidate metadata found")
-        candidate = finalize_candidate(read_json(candidate_path), metadata_path=candidate_path)
-        candidate_db = candidate_database(candidate)
-        checked_candidate = inspect_database(candidate_db)
-        if checked_candidate["sha256"] != candidate.get("database", {}).get("sha256"):
-            raise RuntimeError("candidate database changed after finalization")
-        before, after = portal_change(candidate_db, LIVE_DATA / "db/data.sqlite")
-        if after != candidate.get("portalDigest"):
-            raise RuntimeError("candidate portal configuration changed after finalization")
-        if before != after and not apply_candidate_portal_config:
-            raise RuntimeError("portal configuration differs; pass --apply-candidate-portal-config to transfer it")
-        inspect_database(LIVE_DATA / "db/data.sqlite")
-        live_size = database_storage_bytes(LIVE_DATA / "db/data.sqlite")
-        require_storage([
-            (BACKUPS, live_size * 2 + 128 * 1024 * 1024),
-            (LIVE_DATA, live_size + 128 * 1024 * 1024),
-        ], "safe promotion and automatic rollback")
+        progress("Cutover 1/7: validating fresh preflight; production remains online.")
+        candidate = read_json(candidate_path)
+        _, candidate_db = validated_preflight(candidate, apply_candidate_portal_config)
 
         existing_current, existing_previous = release_state()
         if existing_current:
@@ -934,14 +1046,18 @@ def promote(confirm: bool, apply_candidate_portal_config: bool = False) -> dict:
         }
         write_operation(operation)
 
+        progress("Cutover 2/7: stopping the sole production writer. Customer-impact timer starts now.")
+        outage_started = time.monotonic()
         stopped = True
         stop_all_writers()
         disable_autostart()
+        progress("Cutover 3/7: writing durable checkpointed backup (measured near 9 seconds).")
         manifest = backup_quiesced(LIVE_DATA / "db/data.sqlite", backup_dir / "data.sqlite")
         write_json(backup_dir / "manifest.json", manifest)
         previous.setdefault("schemaVersion", manifest.get("schemaVersion"))
         operation.update({"phase": "backed-up", "originalRelease": previous})
         write_operation(operation)
+        progress("Cutover 4/7: applying approved Portal configuration and starting managed container.")
         portal_transfer = apply_portal_config(
             candidate_db, LIVE_DATA / "db/data.sqlite", approved=apply_candidate_portal_config,
         )
@@ -949,6 +1065,8 @@ def promote(confirm: bool, apply_candidate_portal_config: bool = False) -> dict:
         run_production(candidate["imageId"])
         wait_http("http://127.0.0.1:20128/api/health")
         wait_http("https://ai-router.davidustranus.space/api/health")
+        progress(f"TRAFFIC RESTORED after {time.monotonic() - outage_started:.1f} seconds; remaining checks do not interrupt service.")
+        progress("Cutover 5/7: validating Portal, authenticated models, and backup while serving traffic.")
         wait_portal("https://ai-router.davidustranus.space/api/viewer-portal/public", LIVE_DATA / "db/data.sqlite")
         wait_models("https://ai-router.davidustranus.space/v1/models", LIVE_DATA / "db/data.sqlite")
         manifest = verify_backup(backup_dir / "data.sqlite", manifest)
@@ -960,16 +1078,21 @@ def promote(confirm: bool, apply_candidate_portal_config: bool = False) -> dict:
             "promotedAt": datetime.now(timezone.utc).isoformat(),
             "prePromotionBackup": str(backup_dir),
             "portalTransfer": portal_transfer,
-            "liveDatabase": inspect_database(LIVE_DATA / "db/data.sqlite"),
+            "liveDatabase": database_summary(LIVE_DATA / "db/data.sqlite"),
         }
         operation.update({"phase": "committed", "nextCurrent": current, "nextPrevious": previous})
         write_operation(operation)
+        progress("Cutover 6/7: committing release state and managed watchdog.")
         write_release_state(current, previous)
         candidate_path.unlink(missing_ok=True)
         fsync_directory(candidate_path.parent)
         clear_operation()
+        PREFLIGHT_FILE.unlink(missing_ok=True)
+        fsync_directory(PREFLIGHT_FILE.parent)
+        progress("Cutover 7/7: complete.")
         return current
     except BaseException as original:
+        progress(f"Cutover failed: {original}. Starting automatic recovery.")
         if OPERATION_FILE.exists():
             try:
                 recover_operation()
@@ -1283,6 +1406,7 @@ def status() -> None:
         "current": current,
         "previous": previous,
         "operation": read_json(OPERATION_FILE) if OPERATION_FILE.exists() else None,
+        "preflight": read_json(PREFLIGHT_FILE) if PREFLIGHT_FILE.exists() else None,
         "candidate": read_json(RELEASES / "candidate.json") if (RELEASES / "candidate.json").exists() else None,
     }
     print(json.dumps(state, indent=2))
@@ -1335,6 +1459,7 @@ def parser() -> argparse.ArgumentParser:
     update = commands.add_parser("update")
     update.add_argument("--no-fetch", action="store_true")
     update.add_argument("--portal-from", type=Path)
+    commands.add_parser("preflight")
     promote_command = commands.add_parser("promote")
     promote_command.add_argument("--confirm-cutover", action="store_true")
     promote_command.add_argument("--apply-candidate-portal-config", action="store_true")
@@ -1363,6 +1488,8 @@ def main() -> None:
     elif args.command == "update":
         candidate = under_lock(prepare_candidate, fetch=not args.no_fetch, portal_from=args.portal_from)
         print(json.dumps(candidate, indent=2))
+    elif args.command == "preflight":
+        print(json.dumps(under_lock(preflight), indent=2))
     elif args.command == "promote":
         print(json.dumps(promote(args.confirm_cutover, args.apply_candidate_portal_config), indent=2))
     elif args.command == "rollback":
