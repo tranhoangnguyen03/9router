@@ -272,6 +272,20 @@ class OpsTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "lsof failed"):
                 CTL.wait_database_closed(timeout=0.01)
 
+    def test_promotion_cleanup_keeps_journal_until_fallible_filesystem_cleanup_finishes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old_preflight = CTL.PREFLIGHT_FILE
+            CTL.PREFLIGHT_FILE = Path(tmp) / "preflight.json"
+            candidate = Path(tmp) / "candidate.json"
+            CTL.PREFLIGHT_FILE.touch(); candidate.touch()
+            try:
+                with patch.object(CTL, "clear_operation", side_effect=lambda: self.assertFalse(CTL.PREFLIGHT_FILE.exists())) as clear:
+                    CTL.complete_promotion_cleanup(candidate)
+                clear.assert_called_once()
+                self.assertFalse(candidate.exists())
+            finally:
+                CTL.PREFLIGHT_FILE = old_preflight
+
     def test_committed_operation_journal_finishes_state_before_cleanup(self):
         with tempfile.TemporaryDirectory() as tmp:
             old_releases, old_operation = CTL.RELEASES, CTL.OPERATION_FILE

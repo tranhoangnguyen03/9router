@@ -601,6 +601,14 @@ def write_operation(operation: dict) -> None:
     write_json(OPERATION_FILE, operation)
 
 
+def complete_promotion_cleanup(candidate_path: Path) -> None:
+    candidate_path.unlink(missing_ok=True)
+    fsync_directory(candidate_path.parent)
+    PREFLIGHT_FILE.unlink(missing_ok=True)
+    fsync_directory(PREFLIGHT_FILE.parent)
+    clear_operation()
+
+
 def release_schema(release: dict) -> str | None:
     return (
         (release.get("liveDatabase") or {}).get("schemaVersion")
@@ -1084,11 +1092,7 @@ def promote(confirm: bool, apply_candidate_portal_config: bool = False) -> dict:
         write_operation(operation)
         progress("Cutover 6/7: committing release state and managed watchdog.")
         write_release_state(current, previous)
-        candidate_path.unlink(missing_ok=True)
-        fsync_directory(candidate_path.parent)
-        clear_operation()
-        PREFLIGHT_FILE.unlink(missing_ok=True)
-        fsync_directory(PREFLIGHT_FILE.parent)
+        complete_promotion_cleanup(candidate_path)
         progress("Cutover 7/7: complete.")
         return current
     except BaseException as original:
