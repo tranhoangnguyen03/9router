@@ -457,7 +457,7 @@ def finalize_candidate(candidate: dict, *, metadata_path: Path | None = None) ->
         remove_container(CANDIDATE_CONTAINER)
         run(["docker", "network", "rm", CANDIDATE_NETWORK], check=False, capture=True)
         wait_database_closed(source)
-        require_storage([(source.parent, source.stat().st_size + 128 * 1024 * 1024)], "candidate finalization")
+        require_storage([(source.parent, database_storage_bytes(source) + 128 * 1024 * 1024)], "candidate finalization")
         manifest = backup_database(source, finalized)
     manifest["finalizedAt"] = datetime.now(timezone.utc).isoformat()
     candidate.update({
@@ -970,6 +970,8 @@ def restore_database(backup: Path, *, preserve_current: bool = True) -> Path | N
     failed_dir = None
     if database.exists():
         checkpoint_database(database)
+        if sha256(database) == checked_source["sha256"]:
+            return None
         if preserve_current:
             stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
             failed_dir = BACKUPS / f"failed-{stamp}"
