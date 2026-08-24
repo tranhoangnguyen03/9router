@@ -408,12 +408,11 @@ def start_candidate(image: str, data: Path, port: int = 20130) -> None:
         + '");c.pipe(u).pipe(c);u.on("error",()=>c.destroy())}).listen(20130,"0.0.0.0")'
     )
     run([
-        "docker", "create", "--name", CANDIDATE_PROXY, "--no-healthcheck", "--network", "none",
+        "docker", "create", "--name", CANDIDATE_PROXY, "--no-healthcheck", "--network", CANDIDATE_NETWORK,
         *container_security_args(restart="no", memory="1g"),
         "--user", "1000:1000", "--entrypoint", "node",
         "-p", f"127.0.0.1:{port}:20130", image, "-e", proxy_code,
     ])
-    run(["docker", "network", "connect", CANDIDATE_NETWORK, CANDIDATE_PROXY])
     run(["docker", "start", CANDIDATE_PROXY])
     wait_http(f"http://127.0.0.1:{port}/api/health")
     wait_portal(f"http://127.0.0.1:{port}/api/viewer-portal/public", data / "db/data.sqlite")

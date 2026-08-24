@@ -65,6 +65,20 @@ class OpsTests(unittest.TestCase):
         ):
             self.assertIn(required, joined)
 
+    def test_candidate_proxy_starts_directly_on_internal_network(self):
+        calls = []
+        with tempfile.TemporaryDirectory() as tmp, \
+             patch.object(CTL, "stop_candidate"), \
+             patch.object(CTL, "chown_tree"), \
+             patch.object(CTL, "run", side_effect=lambda args, **kwargs: calls.append(args)), \
+             patch.object(CTL, "wait_http"), \
+             patch.object(CTL, "wait_portal"), \
+             patch.object(CTL, "wait_models"):
+            CTL.start_candidate("image", Path(tmp))
+        proxy_create = next(call for call in calls if call[:2] == ["docker", "create"])
+        self.assertIn(CTL.CANDIDATE_NETWORK, proxy_create)
+        self.assertFalse(any(call[:3] == ["docker", "network", "connect"] for call in calls))
+
     def test_live_permissions_precreate_viewer_session_secret_without_exposing_ops(self):
         with tempfile.TemporaryDirectory() as tmp:
             old_data = CTL.LIVE_DATA
