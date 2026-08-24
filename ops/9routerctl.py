@@ -1040,6 +1040,7 @@ def promote(confirm: bool, apply_candidate_portal_config: bool = False) -> dict:
     previous = None
     backup_dir = None
     stopped = False
+    commit_reached = False
     try:
         recover_operation()
         candidate_path = RELEASES / "candidate.json"
@@ -1103,11 +1104,26 @@ def promote(confirm: bool, apply_candidate_portal_config: bool = False) -> dict:
         }
         operation.update({"phase": "committed", "nextCurrent": current, "nextPrevious": previous})
         write_operation(operation)
+        commit_reached = True
         progress("Cutover 6/7: committing release state and managed watchdog.")
         finish_promotion_commit(current, previous, candidate_path)
         progress("Cutover 7/7: complete.")
         return current
     except BaseException as original:
+        if commit_reached:
+            try:
+                if OPERATION_FILE.exists():
+                    recover_operation()
+                else:
+                    write_release_state(current, previous)
+                    reconcile_release(current)
+            except BaseException as recovery:
+                raise RuntimeError(
+                    f"promotion committed but managed release reconciliation failed; "
+                    f"refusing legacy rollback: {recovery}"
+                ) from original
+            progress(f"Cutover reported an error after commit; managed release retained: {original}")
+            raise
         progress(f"Cutover failed: {original}. Starting automatic recovery.")
         if OPERATION_FILE.exists():
             try:

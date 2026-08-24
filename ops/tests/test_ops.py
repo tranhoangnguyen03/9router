@@ -5,7 +5,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 ROOT = Path(__file__).resolve().parents[2]
 SPEC = importlib.util.spec_from_file_location("nine_router_ctl", ROOT / "ops/9routerctl.py")
@@ -281,6 +281,43 @@ class OpsTests(unittest.TestCase):
         write_state.assert_called_once_with(current, previous)
         reconcile.assert_called_once_with(current)
         self.assertIn("fsync failed", warning)
+
+    def test_post_commit_exception_never_restores_legacy(self):
+        legacy_recovery = Mock()
+        reconcile = Mock(side_effect=RuntimeError("managed reconcile failed"))
+        candidate = {"imageId": "sha256:new"}
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryFile() as lock:
+            releases = Path(tmp) / "releases"
+            releases.mkdir()
+            (releases / "candidate.json").write_text("{}")
+            old_releases, old_backups, old_operation = CTL.RELEASES, CTL.BACKUPS, CTL.OPERATION_FILE
+            CTL.RELEASES, CTL.BACKUPS = releases, Path(tmp) / "backups"
+            CTL.OPERATION_FILE = releases / "operation.json"
+            try:
+                with patch.multiple(
+                    CTL,
+                    require_root=lambda: None, locked=lambda: lock, recover_operation=lambda: None,
+                    progress=lambda message: None, read_json=lambda path: candidate,
+                    validated_preflight=lambda candidate, approved: ({}, Path(tmp) / "candidate.sqlite"),
+                    release_state=lambda: (None, None), write_operation=lambda operation: None,
+                    stop_all_writers=lambda: None, disable_autostart=lambda: None,
+                    backup_quiesced=lambda source, target: {"schemaVersion": "1"},
+                    write_json=lambda path, value: None,
+                    apply_portal_config=lambda source, target, approved: {},
+                    prepare_live_permissions=lambda: None, run_production=lambda image: None,
+                    wait_http=lambda url: None, wait_portal=lambda url, db: None,
+                    wait_models=lambda url, db: None, verify_backup=lambda path, manifest: manifest,
+                    disable_legacy_autostart=lambda: None, enable_watchdog=lambda unit: None,
+                    database_summary=lambda path: {"schemaVersion": "1"},
+                    finish_promotion_commit=Mock(side_effect=OSError("journal fsync failed")),
+                    write_release_state=Mock(), reconcile_release=reconcile,
+                    recover_release=legacy_recovery,
+                ):
+                    with self.assertRaisesRegex(RuntimeError, "refusing legacy rollback"):
+                        CTL.promote(True, True)
+            finally:
+                CTL.RELEASES, CTL.BACKUPS, CTL.OPERATION_FILE = old_releases, old_backups, old_operation
+        legacy_recovery.assert_not_called()
 
     def test_promotion_cleanup_keeps_journal_until_fallible_filesystem_cleanup_finishes(self):
         with tempfile.TemporaryDirectory() as tmp:
