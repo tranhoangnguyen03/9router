@@ -423,7 +423,6 @@ def start_candidate(image: str, data: Path, port: int = 20130) -> None:
     run(["docker", "start", CANDIDATE_PROXY])
     wait_http(f"http://127.0.0.1:{port}/api/health")
     wait_portal(f"http://127.0.0.1:{port}/api/viewer-portal/public", data / "db/data.sqlite")
-    wait_models(f"http://127.0.0.1:{port}/v1/models", data / "db/data.sqlite")
 
 
 def image_id(image: str) -> str:
