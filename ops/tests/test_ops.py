@@ -188,6 +188,7 @@ class OpsTests(unittest.TestCase):
         calls = []
         with tempfile.TemporaryDirectory() as tmp, \
              patch.object(CTL, "stop_all_writers", side_effect=lambda: calls.append("stop")), \
+             patch.object(CTL, "disable_autostart"), \
              patch.object(CTL, "restore_database", side_effect=lambda path: calls.append(("restore", path))), \
              patch.object(CTL, "start_release", side_effect=lambda release: calls.append(("start", release))):
             backup = Path(tmp)
@@ -210,8 +211,10 @@ class OpsTests(unittest.TestCase):
             with patch.object(CTL, "docker_exists", return_value=False), \
                  patch.object(CTL, "remove_container"), \
                  patch.object(CTL, "wait_database_closed"):
-                frozen = CTL.finalize_candidate(candidate)
+                metadata = Path(tmp) / "candidate.json"
+                frozen = CTL.finalize_candidate(candidate, metadata_path=metadata)
             artifact = Path(frozen["finalizedDatabase"])
+            self.assertEqual(json.loads(metadata.read_text())["finalizedDatabase"], str(artifact))
             self.assertTrue(artifact.exists())
             self.assertFalse(data.exists())
             self.assertEqual(CTL.inspect_database(artifact)["sha256"], frozen["database"]["sha256"])
@@ -224,6 +227,30 @@ class OpsTests(unittest.TestCase):
         with patch.object(CTL, "run", return_value=completed):
             with self.assertRaisesRegex(RuntimeError, "lsof failed"):
                 CTL.wait_database_closed(timeout=0.01)
+
+    def test_committed_operation_journal_finishes_state_before_cleanup(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old_releases, old_operation = CTL.RELEASES, CTL.OPERATION_FILE
+            CTL.RELEASES = Path(tmp)
+            CTL.OPERATION_FILE = Path(tmp) / "operation.json"
+            current, previous = {"kind": "image", "imageId": "new"}, {"kind": "systemd"}
+            CTL.write_operation({
+                "type": "promote", "phase": "committed",
+                "nextCurrent": current, "nextPrevious": previous,
+            })
+            try:
+                with patch.object(CTL, "reconcile_release") as reconcile:
+                    CTL.recover_operation()
+                self.assertEqual(CTL.release_state(), (current, previous))
+                reconcile.assert_called_once_with(current)
+                self.assertFalse(CTL.OPERATION_FILE.exists())
+            finally:
+                CTL.RELEASES, CTL.OPERATION_FILE = old_releases, old_operation
+
+    def test_recovery_unit_is_installed_with_control_plane(self):
+        unit = ROOT / "ops/systemd/9router-managed-recovery.service"
+        self.assertTrue(unit.exists())
+        self.assertIn("9routerctl recover", unit.read_text())
 
 
 if __name__ == "__main__":

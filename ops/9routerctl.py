@@ -27,6 +27,10 @@ CANDIDATES = CONTROL_ROOT / "candidates"
 RELEASES = CONTROL_ROOT / "releases"
 LOCK_FILE = Path(os.environ.get("NINEROUTER_LOCK", "/run/lock/9router-deploy.lock"))
 WATCHDOG_STATE = Path(os.environ.get("NINEROUTER_WATCHDOG_STATE", "/run/9router-managed-watchdog.failures"))
+OPERATION_FILE = RELEASES / "operation.json"
+LEGACY_WATCHDOG_UNIT = Path("/etc/systemd/system/9router-watchdog.timer")
+LEGACY_WATCHDOG_SOURCE = LIVE_DATA / "ops/watchdog.timer"
+LEGACY_WATCHDOG_WANTS = Path("/etc/systemd/system/timers.target.wants/9router-watchdog.timer")
 EVENT_LOG = LIVE_DATA / "ops/logs/events.jsonl"
 IMAGE_REPO = os.environ.get("NINEROUTER_IMAGE_REPO", "9router-viewer")
 PROD_CONTAINER = "9router-prod"
@@ -57,6 +61,14 @@ def run(args: list[str], *, cwd: Path | None = None, capture: bool = False, chec
 def require_root() -> None:
     if os.geteuid() != 0:
         raise SystemExit("This command must run as root.")
+
+
+def fsync_directory(path: Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
 
 
 def sha256(path: Path) -> str:
@@ -93,10 +105,29 @@ def inspect_database(path: Path) -> dict:
     return metadata
 
 
-def require_disk_space(path: Path, needed: int, operation: str) -> None:
-    free = shutil.disk_usage(path).free
-    if free < needed:
-        raise RuntimeError(f"not enough disk space for {operation}: need {needed:,} bytes, have {free:,}")
+def existing_parent(path: Path) -> Path:
+    while not path.exists():
+        path = path.parent
+    return path
+
+
+def require_storage(requirements: list[tuple[Path, int]], operation: str) -> None:
+    by_device: dict[int, tuple[Path, int]] = {}
+    for requested_path, needed in requirements:
+        path = existing_parent(requested_path)
+        device = path.stat().st_dev
+        representative, total = by_device.get(device, (path, 0))
+        by_device[device] = (representative, total + needed)
+    for path, needed in by_device.values():
+        free = shutil.disk_usage(path).free
+        if free < needed:
+            raise RuntimeError(f"not enough disk space for {operation} on {path}: need {needed:,} bytes, have {free:,}")
+
+
+def database_storage_bytes(database: Path) -> int:
+    return sum(path.stat().st_size for path in (
+        database, Path(str(database) + "-wal"), Path(str(database) + "-shm"),
+    ) if path.exists())
 
 
 def backup_database(source: Path, target: Path) -> dict:
@@ -117,7 +148,10 @@ def backup_database(source: Path, target: Path) -> dict:
         target_db.close()
         source_db.close()
     os.chmod(temporary, 0o600)
+    with temporary.open("rb") as handle:
+        os.fsync(handle.fileno())
     temporary.replace(target)
+    fsync_directory(target.parent)
     metadata.update({
         "source": str(source),
         "file": str(target),
@@ -304,12 +338,48 @@ def wait_models(url: str, database: Path, *, timeout: int = 30) -> None:
         try:
             with urllib.request.urlopen(request, timeout=5) as response:
                 payload = json.load(response)
-                if response.status == 200 and isinstance(payload.get("data"), list):
+                if response.status == 200 and isinstance(payload.get("data"), list) and payload["data"]:
                     return
         except Exception:
             pass
         time.sleep(1)
     raise RuntimeError(f"authenticated model-list validation failed for {url}")
+
+
+def expected_public_portal(database: Path) -> dict:
+    db = sqlite3.connect(f"file:{database}?mode=ro", uri=True)
+    try:
+        portal = portal_config(db) or {}
+        valid_ids = {row[0] for row in db.execute("select id from apiKeys")}
+    finally:
+        db.close()
+    enabled = portal.get("enabled") is True
+    groups = portal.get("groups") if isinstance(portal.get("groups"), list) else []
+    has_valid_group = any(
+        any(key_id in valid_ids for key_id in group.get("apiKeyIds", []))
+        for group in groups if isinstance(group, dict)
+    )
+    return {
+        "enabled": enabled,
+        "title": (portal.get("title") or "9Router").strip(),
+        "subtitle": (portal.get("subtitle") or "").strip(),
+        "board": portal.get("publishedBoard") if enabled else None,
+        "usageAvailable": enabled and bool(portal.get("passwordHash")) and has_valid_group,
+    }
+
+
+def wait_portal(url: str, database: Path, *, timeout: int = 30) -> None:
+    expected = expected_public_portal(database)
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            with urllib.request.urlopen(url, timeout=5) as response:
+                if response.status == 200 and json.load(response) == expected:
+                    return
+        except Exception:
+            pass
+        time.sleep(1)
+    raise RuntimeError(f"Viewer Portal response does not match finalized configuration: {url}")
 
 
 def start_candidate(image: str, data: Path, port: int = 20130) -> None:
@@ -346,7 +416,7 @@ def start_candidate(image: str, data: Path, port: int = 20130) -> None:
     run(["docker", "network", "connect", CANDIDATE_NETWORK, CANDIDATE_PROXY])
     run(["docker", "start", CANDIDATE_PROXY])
     wait_http(f"http://127.0.0.1:{port}/api/health")
-    wait_http(f"http://127.0.0.1:{port}/api/viewer-portal/public")
+    wait_portal(f"http://127.0.0.1:{port}/api/viewer-portal/public", data / "db/data.sqlite")
     wait_models(f"http://127.0.0.1:{port}/v1/models", data / "db/data.sqlite")
 
 
@@ -362,7 +432,7 @@ def candidate_database(candidate: dict) -> Path:
     return Path(candidate.get("finalizedDatabase") or Path(candidate["data"]) / "db/data.sqlite")
 
 
-def finalize_candidate(candidate: dict) -> dict:
+def finalize_candidate(candidate: dict, *, metadata_path: Path | None = None) -> dict:
     candidate = dict(candidate)
     source = Path(candidate["data"]) / "db/data.sqlite"
     finalized = Path(candidate["data"]).parent / "finalized/data.sqlite"
@@ -387,9 +457,8 @@ def finalize_candidate(candidate: dict) -> dict:
         remove_container(CANDIDATE_CONTAINER)
         run(["docker", "network", "rm", CANDIDATE_NETWORK], check=False, capture=True)
         wait_database_closed(source)
-        require_disk_space(source.parent, source.stat().st_size + 128 * 1024 * 1024, "candidate finalization")
+        require_storage([(source.parent, source.stat().st_size + 128 * 1024 * 1024)], "candidate finalization")
         manifest = backup_database(source, finalized)
-        shutil.rmtree(Path(candidate["data"]))
     manifest["finalizedAt"] = datetime.now(timezone.utc).isoformat()
     candidate.update({
         "finalizedDatabase": str(finalized),
@@ -397,6 +466,12 @@ def finalize_candidate(candidate: dict) -> dict:
         "portalDigest": database_portal_digest(finalized),
         "finalizedAt": manifest["finalizedAt"],
     })
+    if metadata_path:
+        write_json(metadata_path, candidate)
+        data = Path(candidate["data"])
+        if data.exists():
+            shutil.rmtree(data)
+            fsync_directory(data.parent)
     return candidate
 
 
@@ -407,9 +482,13 @@ def git_output(*args: str) -> str:
 def write_json(path: Path, value: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(json.dumps(value, indent=2) + "\n")
+    with temporary.open("w") as handle:
+        handle.write(json.dumps(value, indent=2) + "\n")
+        handle.flush()
+        os.fsync(handle.fileno())
     os.chmod(temporary, 0o600)
     temporary.replace(path)
+    fsync_directory(path.parent)
 
 
 def read_json(path: Path) -> dict:
@@ -430,6 +509,17 @@ def release_state() -> tuple[dict | None, dict | None]:
 
 def write_release_state(current: dict, previous: dict) -> None:
     write_json(RELEASES / "state.json", {"current": current, "previous": previous})
+
+
+def clear_operation() -> None:
+    OPERATION_FILE.unlink(missing_ok=True)
+    OPERATION_FILE.with_suffix(".json.tmp").unlink(missing_ok=True)
+    if OPERATION_FILE.parent.exists():
+        fsync_directory(OPERATION_FILE.parent)
+
+
+def write_operation(operation: dict) -> None:
+    write_json(OPERATION_FILE, operation)
 
 
 def release_schema(release: dict) -> str | None:
@@ -476,12 +566,16 @@ def prepare_candidate(*, fetch: bool, portal_from: Path | None) -> dict:
             fresh = run(["git", "merge-base", "--is-ancestor", "upstream/master", "HEAD"], cwd=REPO, check=False)
             if fresh.returncode != 0:
                 raise RuntimeError("the fork has not incorporated current upstream/master; merge and review it first")
-    run_tests()
     sha = git_output("rev-parse", "HEAD")
     short = sha[:12]
     image = f"{IMAGE_REPO}:{short}"
     source_database = LIVE_DATA / "db/data.sqlite"
-    require_disk_space(CONTROL_ROOT, source_database.stat().st_size + 512 * 1024 * 1024, "candidate snapshot")
+    docker_root = Path(run(["docker", "info", "--format", "{{.DockerRootDir}}"], capture=True).stdout.strip())
+    require_storage([
+        (CONTROL_ROOT, database_storage_bytes(source_database) + 128 * 1024 * 1024),
+        (docker_root, 2 * 1024 * 1024 * 1024),
+    ], "candidate build and snapshot")
+    run_tests()
     run(["docker", "build", "--build-arg", f"VCS_REF={sha}", "-t", image, "."], cwd=REPO)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
     data = CANDIDATES / f"{short}-{stamp}" / "data"
@@ -568,7 +662,25 @@ def is_active(unit: str) -> bool:
 
 
 def is_enabled(unit: str) -> bool:
+    if unit == "9router-watchdog.timer":
+        return LEGACY_WATCHDOG_WANTS.exists()
     return systemctl("is-enabled", "--quiet", unit, check=False).returncode == 0
+
+
+def ensure_legacy_watchdog_unit() -> None:
+    if not LEGACY_WATCHDOG_SOURCE.exists():
+        raise RuntimeError(f"legacy watchdog unit source is missing: {LEGACY_WATCHDOG_SOURCE}")
+    if not LEGACY_WATCHDOG_UNIT.exists():
+        LEGACY_WATCHDOG_UNIT.symlink_to(LEGACY_WATCHDOG_SOURCE)
+        systemctl("daemon-reload")
+
+
+def disable_legacy_autostart() -> None:
+    systemctl("disable", "9router.service")
+    LEGACY_WATCHDOG_WANTS.unlink(missing_ok=True)
+    fsync_directory(LEGACY_WATCHDOG_WANTS.parent)
+    if is_enabled("9router.service") or is_enabled("9router-watchdog.timer"):
+        raise RuntimeError("failed to disable legacy 9router autostart")
 
 
 def locked():
@@ -581,6 +693,7 @@ def locked():
 def under_lock(function, *args, **kwargs):
     lock = locked()
     try:
+        recover_operation()
         return function(*args, **kwargs)
     finally:
         fcntl.flock(lock, fcntl.LOCK_UN)
@@ -636,12 +749,17 @@ def stop_all_writers() -> None:
 
 
 def disable_autostart() -> None:
-    systemctl(
-        "disable", "9router.service", "9router-watchdog.timer", "9router-managed-watchdog.timer", check=False,
-    )
+    disable_legacy_autostart()
+    units = ("9router-managed-watchdog.timer",)
+    systemctl("disable", *units)
+    enabled = [unit for unit in ("9router.service", "9router-watchdog.timer", *units) if is_enabled(unit)]
+    if enabled:
+        raise RuntimeError(f"failed to disable autostart units: {', '.join(enabled)}")
 
 
 def enable_watchdog(unit: str) -> None:
+    if unit == "9router-watchdog.timer":
+        ensure_legacy_watchdog_unit()
     systemctl("enable", "--now", unit)
     if not is_active(unit) or not is_enabled(unit):
         raise RuntimeError(f"watchdog did not become active and enabled: {unit}")
@@ -656,7 +774,8 @@ def start_release(release: dict) -> None:
         wait_http("http://127.0.0.1:20128/")
         enable_watchdog("9router-watchdog.timer")
     else:
-        systemctl("disable", "--now", "9router.service", "9router-watchdog.timer", check=False)
+        systemctl("stop", "9router.service", "9router-watchdog.timer", check=False)
+        disable_legacy_autostart()
         prepare_live_permissions()
         run_production(release["imageId"])
         wait_http("http://127.0.0.1:20128/api/health")
@@ -665,9 +784,57 @@ def start_release(release: dict) -> None:
 
 def recover_release(release: dict, backup: Path | None = None) -> None:
     stop_all_writers()
+    disable_autostart()
     if backup and (backup / "data.sqlite").exists():
         restore_database(backup)
     start_release(release)
+
+
+def release_healthy(release: dict) -> bool:
+    if release.get("kind") == "systemd":
+        return is_active(release.get("unit", "9router.service")) and url_ok("http://127.0.0.1:20128/")
+    return (
+        docker_exists(PROD_CONTAINER)
+        and run(["docker", "inspect", "-f", "{{.State.Running}}", PROD_CONTAINER], capture=True, check=False).stdout.strip() == "true"
+        and url_ok("http://127.0.0.1:20128/api/health")
+    )
+
+
+def reconcile_release(release: dict) -> None:
+    if release_healthy(release):
+        if release.get("kind") == "systemd":
+            systemctl("disable", "--now", "9router-managed-watchdog.timer", check=False)
+            enable_watchdog("9router-watchdog.timer")
+        else:
+            systemctl("stop", "9router.service", "9router-watchdog.timer", check=False)
+            disable_legacy_autostart()
+            enable_watchdog("9router-managed-watchdog.timer")
+        return
+    stop_all_writers()
+    start_release(release)
+
+
+def recover_operation() -> None:
+    if not OPERATION_FILE.exists():
+        return
+    operation = read_json(OPERATION_FILE)
+    if operation.get("phase") == "committed":
+        current = operation["nextCurrent"]
+        previous = operation.get("nextPrevious") or {}
+        write_release_state(current, previous)
+        reconcile_release(current)
+        if operation.get("type") == "promote":
+            (RELEASES / "candidate.json").unlink(missing_ok=True)
+    else:
+        prior = operation.get("priorState") or {}
+        original = operation.get("originalRelease")
+        backup_value = operation.get("backupDir")
+        if not original:
+            raise RuntimeError("operation journal is missing its original release")
+        recover_release(original, Path(backup_value) if backup_value else None)
+        if prior.get("current"):
+            write_release_state(prior["current"], prior.get("previous") or {})
+    clear_operation()
 
 
 def portal_change(source: Path, target: Path) -> tuple[str, str]:
@@ -689,11 +856,11 @@ def promote(confirm: bool, apply_candidate_portal_config: bool = False) -> dict:
     backup_dir = None
     stopped = False
     try:
+        recover_operation()
         candidate_path = RELEASES / "candidate.json"
         if not candidate_path.exists():
             raise RuntimeError("no tested candidate metadata found")
-        candidate = finalize_candidate(read_json(candidate_path))
-        write_json(candidate_path, candidate)
+        candidate = finalize_candidate(read_json(candidate_path), metadata_path=candidate_path)
         candidate_db = candidate_database(candidate)
         checked_candidate = inspect_database(candidate_db)
         if checked_candidate["sha256"] != candidate.get("database", {}).get("sha256"):
@@ -703,24 +870,38 @@ def promote(confirm: bool, apply_candidate_portal_config: bool = False) -> dict:
             raise RuntimeError("candidate portal configuration changed after finalization")
         if before != after and not apply_candidate_portal_config:
             raise RuntimeError("portal configuration differs; pass --apply-candidate-portal-config to transfer it")
-        live_size = (LIVE_DATA / "db/data.sqlite").stat().st_size
-        require_disk_space(BACKUPS.parent, live_size * 3 + 256 * 1024 * 1024, "safe promotion and automatic rollback")
+        live_size = database_storage_bytes(LIVE_DATA / "db/data.sqlite")
+        require_storage([
+            (BACKUPS, live_size * 2 + 128 * 1024 * 1024),
+            (LIVE_DATA, live_size + 128 * 1024 * 1024),
+        ], "safe promotion and automatic rollback")
 
-        existing_current, _ = release_state()
+        existing_current, existing_previous = release_state()
         if existing_current:
             previous = dict(existing_current)
             previous.setdefault("kind", "image")
         else:
             previous = {"kind": "systemd", "unit": "9router.service"}
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        backup_dir = BACKUPS / f"pre-promote-{stamp}"
+        operation = {
+            "id": f"promote-{stamp}", "type": "promote", "phase": "prepared",
+            "createdAt": datetime.now(timezone.utc).isoformat(),
+            "originalRelease": previous,
+            "priorState": {"current": existing_current, "previous": existing_previous},
+            "candidate": candidate,
+            "backupDir": str(backup_dir),
+        }
+        write_operation(operation)
 
         stopped = True
         stop_all_writers()
         disable_autostart()
-        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-        backup_dir = BACKUPS / f"pre-promote-{stamp}"
         manifest = backup_database(LIVE_DATA / "db/data.sqlite", backup_dir / "data.sqlite")
         write_json(backup_dir / "manifest.json", manifest)
         previous.setdefault("schemaVersion", manifest.get("schemaVersion"))
+        operation.update({"phase": "backed-up", "originalRelease": previous})
+        write_operation(operation)
         portal_transfer = apply_portal_config(
             candidate_db, LIVE_DATA / "db/data.sqlite", approved=apply_candidate_portal_config,
         )
@@ -728,9 +909,9 @@ def promote(confirm: bool, apply_candidate_portal_config: bool = False) -> dict:
         run_production(candidate["imageId"])
         wait_http("http://127.0.0.1:20128/api/health")
         wait_http("https://ai-router.davidustranus.space/api/health")
-        wait_http("https://ai-router.davidustranus.space/api/viewer-portal/public")
+        wait_portal("https://ai-router.davidustranus.space/api/viewer-portal/public", LIVE_DATA / "db/data.sqlite")
         wait_models("https://ai-router.davidustranus.space/v1/models", LIVE_DATA / "db/data.sqlite")
-        systemctl("disable", "9router.service", "9router-watchdog.timer")
+        disable_legacy_autostart()
         enable_watchdog("9router-managed-watchdog.timer")
         current = {
             "kind": "image", **candidate,
@@ -739,14 +920,23 @@ def promote(confirm: bool, apply_candidate_portal_config: bool = False) -> dict:
             "portalTransfer": portal_transfer,
             "liveDatabase": inspect_database(LIVE_DATA / "db/data.sqlite"),
         }
+        operation.update({"phase": "committed", "nextCurrent": current, "nextPrevious": previous})
+        write_operation(operation)
         write_release_state(current, previous)
         candidate_path.unlink(missing_ok=True)
+        fsync_directory(candidate_path.parent)
+        clear_operation()
         return current
-    except Exception as original:
-        if stopped and previous:
+    except BaseException as original:
+        if OPERATION_FILE.exists():
+            try:
+                recover_operation()
+            except BaseException as recovery:
+                raise RuntimeError(f"promotion failed and journal recovery also failed: {recovery}") from original
+        elif stopped and previous:
             try:
                 recover_release(previous, backup_dir)
-            except Exception as recovery:
+            except BaseException as recovery:
                 raise RuntimeError(f"promotion failed and automatic recovery also failed: {recovery}") from original
         raise
     finally:
@@ -803,6 +993,7 @@ def restore_database(backup: Path, *, preserve_current: bool = True) -> Path | N
             os.fsync(handle.fileno())
         for suffix in ("-wal", "-shm"):
             Path(str(database) + suffix).unlink(missing_ok=True)
+        fsync_directory(database.parent)
         os.replace(temporary, database)
         directory_fd = os.open(database.parent, os.O_RDONLY)
         try:
@@ -823,7 +1014,12 @@ def rollback(confirm: bool, restore: Path | None) -> None:
     pre_rollback = None
     stopped = False
     try:
+        recover_operation()
         current, previous = release_state()
+        if current and current.get("rolledBackAt"):
+            return
+        if not current:
+            raise RuntimeError("no current release metadata found")
         if not previous:
             raise RuntimeError("no previous release metadata found")
         if restore:
@@ -833,27 +1029,60 @@ def rollback(confirm: bool, restore: Path | None) -> None:
             live_schema = inspect_database(LIVE_DATA / "db/data.sqlite").get("schemaVersion")
             if release_schema(previous) != live_schema:
                 raise RuntimeError("database schema changed; rollback requires --restore-backup")
-        live_size = (LIVE_DATA / "db/data.sqlite").stat().st_size
-        require_disk_space(BACKUPS.parent, live_size * 3 + 256 * 1024 * 1024, "safe rollback recovery")
+        live_size = max(
+            database_storage_bytes(LIVE_DATA / "db/data.sqlite"),
+            (restore / "data.sqlite" if restore and restore.is_dir() else restore).stat().st_size if restore else 0,
+        )
+        require_storage([
+            (BACKUPS, live_size * 2 + 128 * 1024 * 1024),
+            (LIVE_DATA, live_size + 128 * 1024 * 1024),
+        ], "safe rollback recovery")
+
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        pre_rollback = BACKUPS / f"pre-rollback-{stamp}"
+        operation = {
+            "id": f"rollback-{stamp}", "type": "rollback", "phase": "prepared",
+            "createdAt": datetime.now(timezone.utc).isoformat(),
+            "originalRelease": current,
+            "priorState": {"current": current, "previous": previous},
+            "targetRelease": previous,
+            "backupDir": str(pre_rollback),
+        }
+        write_operation(operation)
 
         stopped = True
         stop_all_writers()
         disable_autostart()
-        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-        pre_rollback = BACKUPS / f"pre-rollback-{stamp}"
         manifest = backup_database(LIVE_DATA / "db/data.sqlite", pre_rollback / "data.sqlite")
         write_json(pre_rollback / "manifest.json", manifest)
+        operation["phase"] = "backed-up"
+        write_operation(operation)
         if restore:
             restore_database(restore, preserve_current=False)
         start_release(previous)
         wait_http("https://ai-router.davidustranus.space/api/health" if previous.get("kind") != "systemd" else "https://ai-router.davidustranus.space/")
-        rolled_back = {**previous, "rolledBackAt": datetime.now(timezone.utc).isoformat()}
+        wait_models("https://ai-router.davidustranus.space/v1/models", LIVE_DATA / "db/data.sqlite")
+        if previous.get("kind") != "systemd":
+            wait_portal("https://ai-router.davidustranus.space/api/viewer-portal/public", LIVE_DATA / "db/data.sqlite")
+        rolled_back = {
+            **previous,
+            "rolledBackAt": datetime.now(timezone.utc).isoformat(),
+            "preRollbackBackup": str(pre_rollback),
+        }
+        operation.update({"phase": "committed", "nextCurrent": rolled_back, "nextPrevious": current or {}})
+        write_operation(operation)
         write_release_state(rolled_back, current or {})
-    except Exception as original:
-        if stopped and current:
+        clear_operation()
+    except BaseException as original:
+        if OPERATION_FILE.exists():
+            try:
+                recover_operation()
+            except BaseException as recovery:
+                raise RuntimeError(f"rollback failed and journal recovery also failed: {recovery}") from original
+        elif stopped and current:
             try:
                 recover_release(current, pre_rollback)
-            except Exception as recovery:
+            except BaseException as recovery:
                 raise RuntimeError(f"rollback failed and automatic recovery also failed: {recovery}") from original
         raise
     finally:
@@ -888,15 +1117,16 @@ def cleanup_plan() -> list[tuple[str, Path | str]]:
         backup_dirs = sorted((p for p in BACKUPS.iterdir() if p.is_dir()), key=lambda p: p.stat().st_mtime, reverse=True)
         protected = set(backup_dirs[:3])
         for release in (current, previous):
-            recorded = release.get("prePromotionBackup")
-            if recorded:
-                protected.add(Path(recorded))
+            for key in ("prePromotionBackup", "preRollbackBackup"):
+                recorded = release.get(key)
+                if recorded:
+                    protected.add(Path(recorded))
         for path in backup_dirs:
             if path not in protected:
                 actions.append(("remove-tree", path))
 
     keep_images = {value for value in (current.get("imageId"), previous.get("imageId")) if value}
-    if not current and candidate_meta.get("imageId"):
+    if pending_candidate and candidate_meta.get("imageId"):
         keep_images.add(candidate_meta["imageId"])
     images = run(
         ["docker", "image", "ls", IMAGE_REPO, "--format", "{{.ID}} {{.Repository}}:{{.Tag}}"],
@@ -1005,6 +1235,7 @@ def status() -> None:
         "candidateHealth": url_ok("http://127.0.0.1:20130/api/health"),
         "current": current,
         "previous": previous,
+        "operation": read_json(OPERATION_FILE) if OPERATION_FILE.exists() else None,
         "candidate": read_json(RELEASES / "candidate.json") if (RELEASES / "candidate.json").exists() else None,
     }
     print(json.dumps(state, indent=2))
@@ -1023,16 +1254,26 @@ def install_control_plane(*, quiet: bool = False) -> None:
     target = bin_dir / "9routerctl"
     shutil.copy2(source_script, target)
     os.chmod(target, 0o755)
-    for unit in ("9router-managed-watchdog.service", "9router-managed-watchdog.timer"):
+    units = (
+        "9router-managed-recovery.service",
+        "9router-managed-watchdog.service",
+        "9router-managed-watchdog.timer",
+    )
+    for unit in units:
         shutil.copy2(source_units / unit, installed_units / unit)
         shutil.copy2(source_units / unit, Path("/etc/systemd/system") / unit)
     symlink = Path("/usr/local/sbin/9routerctl")
     symlink.unlink(missing_ok=True)
     symlink.symlink_to(target)
     systemctl("daemon-reload")
+    systemctl("enable", "9router-managed-recovery.service")
     current, _ = release_state()
-    if not current:
+    if current:
+        reconcile_release(current)
+    else:
         systemctl("disable", "--now", "9router-managed-watchdog.timer", check=False)
+        ensure_legacy_watchdog_unit()
+        systemctl("enable", "9router.service", "9router-watchdog.timer")
     if not quiet:
         print(f"Installed {target}; watchdog state matches the active release.")
 
@@ -1057,6 +1298,7 @@ def parser() -> argparse.ArgumentParser:
     cleanup_command.add_argument("--apply", action="store_true")
     commands.add_parser("status")
     commands.add_parser("watchdog")
+    commands.add_parser("recover")
     commands.add_parser("stop-candidate")
     return result
 
@@ -1084,6 +1326,16 @@ def main() -> None:
         status()
     elif args.command == "watchdog":
         watchdog()
+    elif args.command == "recover":
+        require_root()
+        lock = locked()
+        try:
+            recover_operation()
+            current, _ = release_state()
+            reconcile_release(current or {"kind": "systemd", "unit": "9router.service"})
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
+            lock.close()
     elif args.command == "stop-candidate":
         require_root()
         under_lock(stop_candidate)
