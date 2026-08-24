@@ -272,6 +272,16 @@ class OpsTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "lsof failed"):
                 CTL.wait_database_closed(timeout=0.01)
 
+    def test_committed_promotion_cleanup_failure_never_rolls_back(self):
+        current, previous = {"kind": "image", "imageId": "new"}, {"kind": "systemd"}
+        with patch.object(CTL, "write_release_state") as write_state, \
+             patch.object(CTL, "complete_promotion_cleanup", side_effect=OSError("fsync failed")), \
+             patch.object(CTL, "reconcile_release") as reconcile:
+            warning = CTL.finish_promotion_commit(current, previous, Path("candidate.json"))
+        write_state.assert_called_once_with(current, previous)
+        reconcile.assert_called_once_with(current)
+        self.assertIn("fsync failed", warning)
+
     def test_promotion_cleanup_keeps_journal_until_fallible_filesystem_cleanup_finishes(self):
         with tempfile.TemporaryDirectory() as tmp:
             old_preflight = CTL.PREFLIGHT_FILE

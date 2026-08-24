@@ -609,6 +609,19 @@ def complete_promotion_cleanup(candidate_path: Path) -> None:
     clear_operation()
 
 
+def finish_promotion_commit(current: dict, previous: dict, candidate_path: Path) -> str | None:
+    write_release_state(current, previous)
+    try:
+        complete_promotion_cleanup(candidate_path)
+        return None
+    except BaseException as exc:
+        # Runtime/state are already committed. Never roll back for terminal metadata cleanup.
+        reconcile_release(current)
+        warning = f"promotion committed; deferred metadata cleanup: {exc}"
+        progress(f"WARNING: {warning}")
+        return warning
+
+
 def release_schema(release: dict) -> str | None:
     return (
         (release.get("liveDatabase") or {}).get("schemaVersion")
@@ -1091,8 +1104,7 @@ def promote(confirm: bool, apply_candidate_portal_config: bool = False) -> dict:
         operation.update({"phase": "committed", "nextCurrent": current, "nextPrevious": previous})
         write_operation(operation)
         progress("Cutover 6/7: committing release state and managed watchdog.")
-        write_release_state(current, previous)
-        complete_promotion_cleanup(candidate_path)
+        finish_promotion_commit(current, previous, candidate_path)
         progress("Cutover 7/7: complete.")
         return current
     except BaseException as original:
