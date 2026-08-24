@@ -8,7 +8,9 @@ import fcntl
 import hashlib
 import json
 import os
+import secrets
 import shutil
+import socket
 import sqlite3
 import subprocess
 import sys
@@ -31,6 +33,7 @@ PROD_CONTAINER = "9router-prod"
 CANDIDATE_CONTAINER = "9router-candidate"
 CANDIDATE_PROXY = "9router-candidate-proxy"
 CANDIDATE_NETWORK = "9router-candidate-internal"
+TEST_IMAGE = "9router-managed-tests"
 VIEWER_TESTS = [
     "unit/managed-deployment.test.js",
     "unit/managed-image-contract.test.js",
@@ -75,6 +78,25 @@ def database_metadata(db: sqlite3.Connection) -> dict:
         if table in tables:
             counts[table] = db.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0]
     return {"schemaVersion": schema, "counts": counts}
+
+
+def inspect_database(path: Path) -> dict:
+    db = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=60)
+    try:
+        check = db.execute("pragma quick_check").fetchone()[0]
+        if check != "ok":
+            raise RuntimeError(f"database quick_check failed: {check}")
+        metadata = database_metadata(db)
+    finally:
+        db.close()
+    metadata.update({"file": str(path), "bytes": path.stat().st_size, "sha256": sha256(path), "quickCheck": "ok"})
+    return metadata
+
+
+def require_disk_space(path: Path, needed: int, operation: str) -> None:
+    free = shutil.disk_usage(path).free
+    if free < needed:
+        raise RuntimeError(f"not enough disk space for {operation}: need {needed:,} bytes, have {free:,}")
 
 
 def backup_database(source: Path, target: Path) -> dict:
@@ -129,30 +151,69 @@ def sanitize_candidate(database: Path) -> None:
         db.close()
 
 
-def copy_portal_config(source: Path, target: Path) -> bool:
+def portal_config(db: sqlite3.Connection) -> dict | None:
+    row = db.execute("select data from settings where id=1").fetchone()
+    settings = json.loads(row[0]) if row else {}
+    return (settings.get("forkExtensions") or {}).get("viewerPortal") or settings.get("viewerPortal")
+
+
+def portal_digest(portal: dict | None) -> str:
+    encoded = json.dumps(portal, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def apply_portal_config(source: Path, target: Path, *, approved: bool) -> dict:
     source_db = sqlite3.connect(f"file:{source}?mode=ro", uri=True)
     target_db = sqlite3.connect(target)
     try:
-        source_row = source_db.execute("select data from settings where id=1").fetchone()
-        target_row = target_db.execute("select data from settings where id=1").fetchone()
-        source_settings = json.loads(source_row[0]) if source_row else {}
-        portal = source_settings.get("forkExtensions", {}).get("viewerPortal") or source_settings.get("viewerPortal")
-        if not portal:
-            return False
-        target_settings = json.loads(target_row[0]) if target_row else {}
-        extensions = dict(target_settings.get("forkExtensions") or {})
-        extensions["viewerPortal"] = portal
-        target_settings["forkExtensions"] = extensions
-        target_settings.pop("viewerPortal", None)
+        portal = portal_config(source_db)
+        current = portal_config(target_db)
+        before, after = portal_digest(current), portal_digest(portal)
+        if before == after:
+            return {"changed": False, "before": before, "after": after}
+        if not approved:
+            raise RuntimeError("portal configuration differs; pass --apply-candidate-portal-config to transfer it")
+        if portal:
+            referenced = {
+                key_id
+                for group in portal.get("groups", [])
+                for key_id in group.get("apiKeyIds", [])
+                if isinstance(key_id, str)
+            }
+            available = {row[0] for row in target_db.execute("select id from apiKeys")}
+            missing = sorted(referenced - available)
+            if missing:
+                raise RuntimeError(f"portal references unknown API key IDs: {', '.join(missing)}")
+        row = target_db.execute("select data from settings where id=1").fetchone()
+        settings = json.loads(row[0]) if row else {}
+        extensions = dict(settings.get("forkExtensions") or {})
+        if portal is None:
+            extensions.pop("viewerPortal", None)
+        else:
+            extensions["viewerPortal"] = portal
+        settings["forkExtensions"] = extensions
+        settings.pop("viewerPortal", None)
         target_db.execute(
             "insert into settings(id,data) values(1,?) on conflict(id) do update set data=excluded.data",
-            (json.dumps(target_settings, separators=(",", ":")),),
+            (json.dumps(settings, separators=(",", ":")),),
         )
         target_db.commit()
-        return True
+        return {"changed": True, "before": before, "after": after}
     finally:
         source_db.close()
         target_db.close()
+
+
+def copy_portal_config(source: Path, target: Path) -> bool:
+    source_db = sqlite3.connect(f"file:{source}?mode=ro", uri=True)
+    try:
+        portal = portal_config(source_db)
+    finally:
+        source_db.close()
+    if not portal:
+        return False
+    apply_portal_config(source, target, approved=True)
+    return True
 
 
 def container_security_args(*, restart: str = "always", memory: str = "1536m") -> list[str]:
@@ -238,7 +299,7 @@ def start_candidate(image: str, data: Path, port: int = 20130) -> None:
         + '");c.pipe(u).pipe(c);u.on("error",()=>c.destroy())}).listen(20130,"0.0.0.0")'
     )
     run([
-        "docker", "create", "--name", CANDIDATE_PROXY,
+        "docker", "create", "--name", CANDIDATE_PROXY, "--no-healthcheck",
         *container_security_args(restart="no", memory="1g"),
         "--user", "1000:1000", "--entrypoint", "node",
         "-p", f"127.0.0.1:{port}:20130", image, "-e", proxy_code,
@@ -268,10 +329,44 @@ def read_json(path: Path) -> dict:
     return json.loads(path.read_text())
 
 
+def release_state() -> tuple[dict | None, dict | None]:
+    state_path = RELEASES / "state.json"
+    if state_path.exists():
+        state = read_json(state_path)
+        return state.get("current"), state.get("previous")
+    current_path, previous_path = RELEASES / "current.json", RELEASES / "previous.json"
+    return (
+        read_json(current_path) if current_path.exists() else None,
+        read_json(previous_path) if previous_path.exists() else None,
+    )
+
+
+def write_release_state(current: dict, previous: dict) -> None:
+    write_json(RELEASES / "state.json", {"current": current, "previous": previous})
+    write_json(RELEASES / "current.json", current)
+    write_json(RELEASES / "previous.json", previous)
+
+
+def release_schema(release: dict) -> str | None:
+    return (
+        (release.get("liveDatabase") or {}).get("schemaVersion")
+        or (release.get("database") or {}).get("schemaVersion")
+        or release.get("schemaVersion")
+    )
+
+
 def run_tests() -> None:
-    run(["npm", "ci", "--no-audit", "--no-fund"], cwd=REPO)
-    run(["npm", "ci", "--no-audit", "--no-fund"], cwd=REPO / "tests")
-    run(["npm", "test", "--", "--run", *VIEWER_TESTS], cwd=REPO / "tests")
+    run(["docker", "build", "--target", "tests", "-t", TEST_IMAGE, "."], cwd=REPO)
+    try:
+        run([
+            "docker", "run", "--rm", "--read-only",
+            "--tmpfs", "/tmp:rw,nosuid,nodev,size=512m,uid=1000,gid=1000",
+            "--tmpfs", "/app/tests/node_modules/.vite-temp:rw,nosuid,nodev,size=64m,uid=1000,gid=1000",
+            "--user", "1000:1000", TEST_IMAGE,
+            "npm", "test", "--prefix", "tests", "--", "--run", *VIEWER_TESTS,
+        ])
+    finally:
+        run(["docker", "image", "rm", TEST_IMAGE], check=False, capture=True)
 
 
 def prepare_candidate(*, fetch: bool, portal_from: Path | None) -> dict:
@@ -292,12 +387,13 @@ def prepare_candidate(*, fetch: bool, portal_from: Path | None) -> dict:
     sha = git_output("rev-parse", "HEAD")
     short = sha[:12]
     image = f"{IMAGE_REPO}:{short}"
+    source_database = LIVE_DATA / "db/data.sqlite"
+    require_disk_space(CONTROL_ROOT, source_database.stat().st_size + 512 * 1024 * 1024, "candidate snapshot")
     run(["docker", "build", "--build-arg", f"VCS_REF={sha}", "-t", image, "."], cwd=REPO)
-    data = CANDIDATES / short / "data"
-    if data.exists():
-        shutil.rmtree(data)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    data = CANDIDATES / f"{short}-{stamp}" / "data"
     (data / "db").mkdir(parents=True, mode=0o700)
-    manifest = backup_database(LIVE_DATA / "db/data.sqlite", data / "db/data.sqlite")
+    backup_database(source_database, data / "db/data.sqlite")
     for relative in ("jwt-secret", "machine-id", "auth/cli-secret"):
         source = LIVE_DATA / relative
         if source.exists():
@@ -306,6 +402,8 @@ def prepare_candidate(*, fetch: bool, portal_from: Path | None) -> dict:
             shutil.copy2(source, destination)
     portal_copied = bool(portal_from and portal_from.exists() and copy_portal_config(portal_from, data / "db/data.sqlite"))
     sanitize_candidate(data / "db/data.sqlite")
+    manifest = inspect_database(data / "db/data.sqlite")
+    manifest["createdAt"] = datetime.now(timezone.utc).isoformat()
     (data / "db/.migrated-from-json").write_text("managed candidate snapshot\n")
     start_candidate(image, data)
     candidate = {
@@ -331,9 +429,15 @@ def prepare_live_permissions() -> None:
         path = LIVE_DATA / name
         path.mkdir(parents=True, exist_ok=True)
         chown_tree(path)
+    secret = LIVE_DATA / "fork-viewer-portal-jwt-secret"
+    if not secret.exists():
+        fd = os.open(secret, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w") as handle:
+            handle.write(secrets.token_urlsafe(48))
     for child in LIVE_DATA.iterdir():
         if child.is_file():
             os.chown(child, 1000, 1000)
+            os.chmod(child, 0o600)
 
 
 def run_production(image: str) -> None:
@@ -371,7 +475,99 @@ def locked():
     return handle
 
 
-def promote(confirm: bool) -> dict:
+def under_lock(function, *args, **kwargs):
+    lock = locked()
+    try:
+        return function(*args, **kwargs)
+    finally:
+        fcntl.flock(lock, fcntl.LOCK_UN)
+        lock.close()
+
+
+def wait_port_free(port: int, *, timeout: int = 30) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        with socket.socket() as probe:
+            probe.settimeout(0.5)
+            if probe.connect_ex(("127.0.0.1", port)) != 0:
+                return
+        time.sleep(0.25)
+    raise RuntimeError(f"port {port} is still in use")
+
+
+def wait_database_closed(*, timeout: int = 30) -> None:
+    database = LIVE_DATA / "db/data.sqlite"
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        result = run(["lsof", "-t", "--", database], capture=True, check=False)
+        if result.returncode == 1 or not result.stdout.strip():
+            return
+        time.sleep(0.25)
+    raise RuntimeError(f"database is still open: {database}")
+
+
+def stop_legacy() -> None:
+    systemctl("stop", "9router-watchdog.timer", "9router-watchdog.service")
+    systemctl("stop", "9router.service")
+    wait_port_free(20128)
+    wait_database_closed()
+
+
+def stop_all_writers() -> None:
+    systemctl(
+        "stop", "9router-watchdog.timer", "9router-watchdog.service",
+        "9router-managed-watchdog.timer", "9router-managed-watchdog.service", check=False,
+    )
+    systemctl("stop", "9router.service", check=False)
+    remove_container(PROD_CONTAINER)
+    active = [unit for unit in (
+        "9router-watchdog.timer", "9router-watchdog.service", "9router-managed-watchdog.timer",
+        "9router-managed-watchdog.service", "9router.service",
+    ) if is_active(unit)]
+    if active:
+        raise RuntimeError(f"failed to stop units: {', '.join(active)}")
+    wait_port_free(20128)
+    wait_database_closed()
+
+
+def enable_watchdog(unit: str) -> None:
+    systemctl("enable", "--now", unit)
+    if not is_active(unit):
+        raise RuntimeError(f"watchdog did not become active: {unit}")
+
+
+def start_release(release: dict) -> None:
+    if release.get("kind") == "systemd":
+        systemctl("enable", "--now", release.get("unit", "9router.service"))
+        if not is_active(release.get("unit", "9router.service")):
+            raise RuntimeError("legacy 9router service did not start")
+        wait_http("http://127.0.0.1:20128/")
+        enable_watchdog("9router-watchdog.timer")
+    else:
+        prepare_live_permissions()
+        run_production(release["imageId"])
+        wait_http("http://127.0.0.1:20128/api/health")
+        enable_watchdog("9router-managed-watchdog.timer")
+
+
+def recover_release(release: dict, backup: Path | None = None) -> None:
+    stop_all_writers()
+    if backup and (backup / "data.sqlite").exists():
+        restore_database(backup)
+    start_release(release)
+
+
+def portal_change(source: Path, target: Path) -> tuple[str, str]:
+    source_db = sqlite3.connect(f"file:{source}?mode=ro", uri=True)
+    target_db = sqlite3.connect(f"file:{target}?mode=ro", uri=True)
+    try:
+        return portal_digest(portal_config(target_db)), portal_digest(portal_config(source_db))
+    finally:
+        source_db.close()
+        target_db.close()
+
+
+def promote(confirm: bool, apply_candidate_portal_config: bool = False) -> dict:
     require_root()
     if not confirm:
         raise RuntimeError("promotion requires --confirm-cutover")
@@ -379,54 +575,67 @@ def promote(confirm: bool) -> dict:
     if not candidate_path.exists():
         raise RuntimeError("no tested candidate metadata found")
     candidate = read_json(candidate_path)
+    candidate_database = Path(candidate["data"]) / "db/data.sqlite"
+    checked_candidate = inspect_database(candidate_database)
+    if checked_candidate["sha256"] != candidate.get("database", {}).get("sha256"):
+        raise RuntimeError("candidate database changed after validation")
+    before, after = portal_change(candidate_database, LIVE_DATA / "db/data.sqlite")
+    if before != after and not apply_candidate_portal_config:
+        raise RuntimeError("portal configuration differs; pass --apply-candidate-portal-config to transfer it")
     wait_http(candidate["healthUrl"], timeout=10)
+    live_size = (LIVE_DATA / "db/data.sqlite").stat().st_size
+    require_disk_space(BACKUPS.parent, live_size * 3 + 256 * 1024 * 1024, "safe promotion and automatic rollback")
+
     lock = locked()
     previous = None
+    backup_dir = None
+    stopped = False
     try:
-        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        existing_current, _ = release_state()
+        if existing_current:
+            previous = dict(existing_current)
+            previous.setdefault("kind", "image")
+        else:
+            previous = {"kind": "systemd", "unit": "9router.service"}
+
+        stopped = True
+        stop_all_writers()
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
         backup_dir = BACKUPS / f"pre-promote-{stamp}"
         manifest = backup_database(LIVE_DATA / "db/data.sqlite", backup_dir / "data.sqlite")
         write_json(backup_dir / "manifest.json", manifest)
-        current_path = RELEASES / "current.json"
-        if current_path.exists():
-            previous = {"kind": "image", **read_json(current_path)}
-        else:
-            previous = {"kind": "systemd", "unit": "9router.service"}
-        write_json(RELEASES / "previous.json", previous)
-
-        systemctl("stop", "9router-watchdog.timer", check=False)
-        systemctl("stop", "9router-managed-watchdog.timer", check=False)
-        if is_active("9router.service"):
-            systemctl("stop", "9router.service")
-        remove_container(PROD_CONTAINER)
+        previous.setdefault("schemaVersion", manifest.get("schemaVersion"))
+        portal_transfer = apply_portal_config(
+            candidate_database, LIVE_DATA / "db/data.sqlite", approved=apply_candidate_portal_config,
+        )
         prepare_live_permissions()
         run_production(candidate["imageId"])
         wait_http("http://127.0.0.1:20128/api/health")
         wait_http("https://ai-router.davidustranus.space/api/health")
-        systemctl("disable", "9router.service", check=False)
-        systemctl("disable", "9router-watchdog.timer", check=False)
-        systemctl("enable", "--now", "9router-managed-watchdog.timer", check=False)
+        systemctl("disable", "9router.service", "9router-watchdog.timer")
+        enable_watchdog("9router-managed-watchdog.timer")
         current = {
-            **candidate,
+            "kind": "image", **candidate,
             "promotedAt": datetime.now(timezone.utc).isoformat(),
             "prePromotionBackup": str(backup_dir),
+            "portalTransfer": portal_transfer,
+            "liveDatabase": inspect_database(LIVE_DATA / "db/data.sqlite"),
         }
-        write_json(current_path, current)
+        write_release_state(current, previous)
         return current
-    except Exception:
-        remove_container(PROD_CONTAINER)
-        if previous and previous.get("kind") == "systemd":
-            systemctl("enable", "--now", "9router.service", check=False)
-            systemctl("enable", "--now", "9router-watchdog.timer", check=False)
-        elif previous and previous.get("imageId"):
-            run_production(previous["imageId"])
+    except Exception as original:
+        if stopped and previous:
+            try:
+                recover_release(previous, backup_dir)
+            except Exception as recovery:
+                raise RuntimeError(f"promotion failed and automatic recovery also failed: {recovery}") from original
         raise
     finally:
         fcntl.flock(lock, fcntl.LOCK_UN)
         lock.close()
 
 
-def restore_database(backup: Path) -> None:
+def restore_database(backup: Path) -> Path | None:
     source = backup / "data.sqlite" if backup.is_dir() else backup
     if not source.exists():
         raise RuntimeError(f"backup not found: {source}")
@@ -437,35 +646,75 @@ def restore_database(backup: Path) -> None:
         check.close()
     if result != "ok":
         raise RuntimeError(f"refusing corrupt backup: {result}")
+
     database = LIVE_DATA / "db/data.sqlite"
-    failed = database.with_name(f"data.failed-{int(time.time())}.sqlite")
-    database.replace(failed)
-    shutil.copy2(source, database)
-    os.chown(database, 1000, 1000)
-    for suffix in ("-wal", "-shm"):
-        Path(str(database) + suffix).unlink(missing_ok=True)
+    database.parent.mkdir(parents=True, exist_ok=True)
+    failed_dir = None
+    if database.exists():
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        failed_dir = BACKUPS / f"failed-{stamp}"
+        manifest = backup_database(database, failed_dir / "data.sqlite")
+        write_json(failed_dir / "manifest.json", manifest)
+
+    temporary = database.with_name(f".{database.name}.restore-{os.getpid()}")
+    temporary.unlink(missing_ok=True)
+    try:
+        shutil.copy2(source, temporary)
+        verify = sqlite3.connect(f"file:{temporary}?mode=ro", uri=True)
+        try:
+            copied_result = verify.execute("pragma quick_check").fetchone()[0]
+        finally:
+            verify.close()
+        if copied_result != "ok":
+            raise RuntimeError(f"restored copy quick_check failed: {copied_result}")
+        os.chown(temporary, 1000, 1000)
+        os.chmod(temporary, 0o600)
+        with temporary.open("rb") as handle:
+            os.fsync(handle.fileno())
+        for suffix in ("-wal", "-shm"):
+            Path(str(database) + suffix).unlink(missing_ok=True)
+        os.replace(temporary, database)
+        directory_fd = os.open(database.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return failed_dir
 
 
 def rollback(confirm: bool, restore: Path | None) -> None:
     require_root()
     if not confirm:
         raise RuntimeError("rollback requires --confirm-rollback")
-    previous_path = RELEASES / "previous.json"
-    if not previous_path.exists():
+    current, previous = release_state()
+    if not previous:
         raise RuntimeError("no previous release metadata found")
-    previous = read_json(previous_path)
+    live_schema = inspect_database(LIVE_DATA / "db/data.sqlite").get("schemaVersion")
+    target_schema = release_schema(previous)
+    if not restore and target_schema != live_schema:
+        raise RuntimeError("database schema changed; rollback requires --restore-backup")
+
     lock = locked()
+    failed_database = None
+    stopped = False
     try:
-        systemctl("stop", "9router-managed-watchdog.timer", check=False)
-        remove_container(PROD_CONTAINER)
+        stopped = True
+        stop_all_writers()
         if restore:
-            restore_database(restore)
-        if previous.get("kind") == "systemd":
-            systemctl("enable", "--now", "9router.service", check=False)
-            systemctl("enable", "--now", "9router-watchdog.timer", check=False)
-        else:
-            run_production(previous["imageId"])
-        wait_http("http://127.0.0.1:20128/api/health" if previous.get("kind") != "systemd" else "http://127.0.0.1:20128/")
+            failed_database = restore_database(restore)
+        start_release(previous)
+        wait_http("https://ai-router.davidustranus.space/api/health" if previous.get("kind") != "systemd" else "https://ai-router.davidustranus.space/")
+        rolled_back = {**previous, "rolledBackAt": datetime.now(timezone.utc).isoformat()}
+        write_release_state(rolled_back, current or {})
+    except Exception:
+        if stopped and current:
+            stop_all_writers()
+            if failed_database:
+                restore_database(failed_database)
+            start_release(current)
+        raise
     finally:
         fcntl.flock(lock, fcntl.LOCK_UN)
         lock.close()
@@ -473,10 +722,9 @@ def rollback(confirm: bool, restore: Path | None) -> None:
 
 def cleanup_plan() -> list[tuple[str, Path | str]]:
     actions: list[tuple[str, Path | str]] = []
-    current_path = RELEASES / "current.json"
     candidate_path = RELEASES / "candidate.json"
-    current = read_json(current_path) if current_path.exists() else {}
-    previous = read_json(RELEASES / "previous.json") if (RELEASES / "previous.json").exists() else {}
+    current_state, previous_state = release_state()
+    current, previous = current_state or {}, previous_state or {}
     candidate_meta = read_json(candidate_path) if candidate_path.exists() else {}
 
     for name in (CANDIDATE_PROXY, CANDIDATE_CONTAINER):
@@ -493,10 +741,11 @@ def cleanup_plan() -> list[tuple[str, Path | str]]:
 
     if BACKUPS.exists():
         backup_dirs = sorted((p for p in BACKUPS.iterdir() if p.is_dir()), key=lambda p: p.stat().st_mtime, reverse=True)
-        protected = set(backup_dirs[:2])
-        recorded = current.get("prePromotionBackup")
-        if recorded:
-            protected.add(Path(recorded))
+        protected = set(backup_dirs[:3])
+        for release in (current, previous):
+            recorded = release.get("prePromotionBackup")
+            if recorded:
+                protected.add(Path(recorded))
         for path in backup_dirs:
             if path not in protected:
                 actions.append(("remove-tree", path))
@@ -581,8 +830,7 @@ def watchdog() -> None:
         append_event({
             "ts": datetime.now(timezone.utc).isoformat(), "level": level, "mode": "managed",
             "checks": {
-                "process": running, "root": private, "api": private,
-                "tunnel": True, "public": True, "direct": public,
+                "process": running, "private": private, "public": public,
             },
             **({"action": action} if action else {}),
         })
@@ -592,6 +840,7 @@ def watchdog() -> None:
 
 
 def status() -> None:
+    current, previous = release_state()
     state = {
         "oldSystemdService": is_active("9router.service"),
         "productionContainer": docker_exists(PROD_CONTAINER),
@@ -599,7 +848,8 @@ def status() -> None:
         "privateHealth": url_ok("http://127.0.0.1:20128/api/health") or url_ok("http://127.0.0.1:20128/"),
         "publicHealth": url_ok("https://ai-router.davidustranus.space/api/health"),
         "candidateHealth": url_ok("http://127.0.0.1:20130/api/health"),
-        "current": read_json(RELEASES / "current.json") if (RELEASES / "current.json").exists() else None,
+        "current": current,
+        "previous": previous,
         "candidate": read_json(RELEASES / "candidate.json") if (RELEASES / "candidate.json").exists() else None,
     }
     print(json.dumps(state, indent=2))
@@ -636,6 +886,7 @@ def parser() -> argparse.ArgumentParser:
     update.add_argument("--portal-from", type=Path)
     promote_command = commands.add_parser("promote")
     promote_command.add_argument("--confirm-cutover", action="store_true")
+    promote_command.add_argument("--apply-candidate-portal-config", action="store_true")
     rollback_command = commands.add_parser("rollback")
     rollback_command.add_argument("--confirm-rollback", action="store_true")
     rollback_command.add_argument("--restore-backup", type=Path)
@@ -654,24 +905,25 @@ def main() -> None:
     elif args.command == "backup":
         require_root()
         target = args.target or BACKUPS / datetime.now(timezone.utc).strftime("manual-%Y%m%dT%H%M%SZ") / "data.sqlite"
-        manifest = backup_database(args.source, target)
+        manifest = under_lock(backup_database, args.source, target)
         write_json(target.parent / "manifest.json", manifest)
         print(json.dumps(manifest, indent=2))
     elif args.command == "update":
-        print(json.dumps(prepare_candidate(fetch=not args.no_fetch, portal_from=args.portal_from), indent=2))
+        candidate = under_lock(prepare_candidate, fetch=not args.no_fetch, portal_from=args.portal_from)
+        print(json.dumps(candidate, indent=2))
     elif args.command == "promote":
-        print(json.dumps(promote(args.confirm_cutover), indent=2))
+        print(json.dumps(promote(args.confirm_cutover, args.apply_candidate_portal_config), indent=2))
     elif args.command == "rollback":
         rollback(args.confirm_rollback, args.restore_backup)
     elif args.command == "cleanup":
-        cleanup(args.apply)
+        under_lock(cleanup, args.apply)
     elif args.command == "status":
         status()
     elif args.command == "watchdog":
         watchdog()
     elif args.command == "stop-candidate":
         require_root()
-        stop_candidate()
+        under_lock(stop_candidate)
 
 
 if __name__ == "__main__":

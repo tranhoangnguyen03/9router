@@ -3,6 +3,15 @@ ARG NODE_IMAGE=node:22-alpine@sha256:c610fcdfb1d5b4740dd70c284ed3cb16bb857e0f716
 FROM ${NODE_IMAGE} AS base
 WORKDIR /app
 
+FROM base AS tests
+RUN apk add --no-cache python3 make g++ linux-headers
+COPY package.json package-lock.json ./
+RUN --mount=type=cache,target=/root/.npm npm ci
+COPY tests/package.json tests/package-lock.json ./tests/
+RUN --mount=type=cache,target=/root/.npm cd tests && npm ci
+COPY --chown=node:node . ./
+USER node
+
 FROM base AS builder
 RUN apk add --no-cache python3 make g++ linux-headers
 COPY package.json package-lock.json ./
