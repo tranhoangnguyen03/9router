@@ -164,6 +164,39 @@ def backup_database(source: Path, target: Path) -> dict:
     return metadata
 
 
+def backup_quiesced(source: Path, target: Path) -> dict:
+    """Durably copy a closed, checkpointed SQLite database; verify after service resumes."""
+    checkpoint_database(source)
+    source_db = sqlite3.connect(f"file:{source}?mode=ro", uri=True)
+    try:
+        metadata = database_metadata(source_db)
+    finally:
+        source_db.close()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = target.with_suffix(target.suffix + ".tmp")
+    temporary.unlink(missing_ok=True)
+    try:
+        shutil.copy2(source, temporary)
+        os.chmod(temporary, 0o600)
+        with temporary.open("rb") as handle:
+            os.fsync(handle.fileno())
+        os.replace(temporary, target)
+        fsync_directory(target.parent)
+    finally:
+        temporary.unlink(missing_ok=True)
+    metadata.update({
+        "source": str(source), "file": str(target), "bytes": target.stat().st_size,
+        "createdAt": datetime.now(timezone.utc).isoformat(), "quickCheck": "pending",
+    })
+    return metadata
+
+
+def verify_backup(target: Path, manifest: dict) -> dict:
+    verified = inspect_database(target)
+    verified.update({"source": manifest.get("source"), "createdAt": manifest.get("createdAt")})
+    return verified
+
+
 def sanitize_candidate(database: Path) -> None:
     db = sqlite3.connect(database)
     try:
@@ -876,6 +909,7 @@ def promote(confirm: bool, apply_candidate_portal_config: bool = False) -> dict:
             raise RuntimeError("candidate portal configuration changed after finalization")
         if before != after and not apply_candidate_portal_config:
             raise RuntimeError("portal configuration differs; pass --apply-candidate-portal-config to transfer it")
+        inspect_database(LIVE_DATA / "db/data.sqlite")
         live_size = database_storage_bytes(LIVE_DATA / "db/data.sqlite")
         require_storage([
             (BACKUPS, live_size * 2 + 128 * 1024 * 1024),
@@ -903,7 +937,7 @@ def promote(confirm: bool, apply_candidate_portal_config: bool = False) -> dict:
         stopped = True
         stop_all_writers()
         disable_autostart()
-        manifest = backup_database(LIVE_DATA / "db/data.sqlite", backup_dir / "data.sqlite")
+        manifest = backup_quiesced(LIVE_DATA / "db/data.sqlite", backup_dir / "data.sqlite")
         write_json(backup_dir / "manifest.json", manifest)
         previous.setdefault("schemaVersion", manifest.get("schemaVersion"))
         operation.update({"phase": "backed-up", "originalRelease": previous})
@@ -917,6 +951,8 @@ def promote(confirm: bool, apply_candidate_portal_config: bool = False) -> dict:
         wait_http("https://ai-router.davidustranus.space/api/health")
         wait_portal("https://ai-router.davidustranus.space/api/viewer-portal/public", LIVE_DATA / "db/data.sqlite")
         wait_models("https://ai-router.davidustranus.space/v1/models", LIVE_DATA / "db/data.sqlite")
+        manifest = verify_backup(backup_dir / "data.sqlite", manifest)
+        write_json(backup_dir / "manifest.json", manifest)
         disable_legacy_autostart()
         enable_watchdog("9router-managed-watchdog.timer")
         current = {
@@ -1061,7 +1097,7 @@ def rollback(confirm: bool, restore: Path | None) -> None:
         stopped = True
         stop_all_writers()
         disable_autostart()
-        manifest = backup_database(LIVE_DATA / "db/data.sqlite", pre_rollback / "data.sqlite")
+        manifest = backup_quiesced(LIVE_DATA / "db/data.sqlite", pre_rollback / "data.sqlite")
         write_json(pre_rollback / "manifest.json", manifest)
         operation["phase"] = "backed-up"
         write_operation(operation)
@@ -1072,6 +1108,8 @@ def rollback(confirm: bool, restore: Path | None) -> None:
         wait_models("https://ai-router.davidustranus.space/v1/models", LIVE_DATA / "db/data.sqlite")
         if previous.get("kind") != "systemd":
             wait_portal("https://ai-router.davidustranus.space/api/viewer-portal/public", LIVE_DATA / "db/data.sqlite")
+        manifest = verify_backup(pre_rollback / "data.sqlite", manifest)
+        write_json(pre_rollback / "manifest.json", manifest)
         rolled_back = {
             **previous,
             "rolledBackAt": datetime.now(timezone.utc).isoformat(),

@@ -14,6 +14,20 @@ SPEC.loader.exec_module(CTL)
 
 
 class OpsTests(unittest.TestCase):
+    def test_quiesced_backup_copies_checkpointed_database_for_fast_cutover(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source, target = Path(tmp) / "source.sqlite", Path(tmp) / "backup/data.sqlite"
+            db = sqlite3.connect(source)
+            db.execute("pragma journal_mode=wal")
+            db.execute("create table state(value text)")
+            db.execute("insert into state values('kept')")
+            db.commit(); db.close()
+            manifest = CTL.backup_quiesced(source, target)
+            self.assertEqual(manifest["quickCheck"], "pending")
+            copy = sqlite3.connect(target)
+            self.assertEqual(copy.execute("select value from state").fetchone()[0], "kept")
+            copy.close()
+
     def test_online_backup_is_complete_and_verified(self):
         with tempfile.TemporaryDirectory() as tmp:
             source = Path(tmp) / "source.sqlite"
