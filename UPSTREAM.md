@@ -4,12 +4,13 @@
 
 - Parent repository: [`decolua/9router`](https://github.com/decolua/9router)
 - Parent branch: `master`
-- Parent commit: `699edac3273e13d4744bc46f6082618f08560702`
-- Parent release: `v0.5.55`
-- Local merge commit: `4df13c6624c4dc51e7d640e5c10970142089a0a5`
-- Verified: 2026-08-22
+- Parent commit: `17c4cc76877bd1755030a8414f8d0083f48dcccf`
+- Parent release: `v0.5.75` plus the two subsequent upstream commits (MiMo dual auth and Claude context controls)
+- Verified: 2026-09-12
 
-The local tree at the merge commit matches the parent tree. Fork extensions are applied in later commits.
+The snapshot includes current upstream/master so it satisfies the managed updater's ancestry check. The merge preserves the Viewer Portal and managed deployment extensions. Find the local integration commit with `git log --merges --oneline`.
+
+Upgrade checks: 87 focused portal/managed/auth/stream/quota tests passed, 23 Python operations tests and shell contracts passed, and an isolated production build passed. No production deployment was performed.
 
 ## Integration Budget
 
@@ -23,6 +24,8 @@ The Viewer Portal intentionally changes only these parent-owned runtime files:
 | `gitbook/constants/docsConfig.js` | Adds one clearly labeled fork-documentation section |
 
 All other Viewer Portal implementation and tests live in new fork-owned paths.
+
+Managed deployment additionally touches `Dockerfile`, `.gitignore`, `src/app/api/health/route.js`, and the `src/app/api/version/{route.js,update/route.js,shutdown/route.js}` endpoints. It owns the root/test lockfiles, `ops/`, and managed-deployment tests/docs. Preserve these hooks on each merge. The Dockerfile keeps the pinned base, npm ci and non-root runner while incorporating upstream runtime dependencies (including node-machine-id).
 
 ## Synchronizing From Parent
 
