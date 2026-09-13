@@ -11,6 +11,7 @@ import {
   YAxis,
 } from "recharts";
 import { Button, Card, Input, SegmentedControl, ThemeToggle } from "@/shared/components";
+import QuotaView from "./QuotaView";
 
 const PERIODS = [
   { value: "24h", label: "24 hours" },
@@ -153,6 +154,7 @@ export default function PortalPageClient() {
   const [password, setPassword] = useState("");
   const [period, setPeriod] = useState("7d");
   const [usage, setUsage] = useState(null);
+  const [tab, setTab] = useState("usage");
   const [expanded, setExpanded] = useState(new Set());
   const [loading, setLoading] = useState(true);
   const [usageLoading, setUsageLoading] = useState(false);
@@ -164,34 +166,46 @@ export default function PortalPageClient() {
       fetch("/api/viewer-portal/session/status", { cache: "no-store" }).then((response) => response.json()),
     ]).then(([publicData, status]) => {
       setPortal(publicData);
+      if (!publicData.usageAvailable && publicData.quotaAvailable) setTab("quota");
       setUnlocked(status.unlocked === true);
     }).catch(() => setError("The portal could not be loaded.")).finally(() => setLoading(false));
   }, []);
 
-  const loadUsage = useCallback(async () => {
-    if (!unlocked) return;
+  const onLocked = useCallback(() => {
+    setUnlocked(false);
+    setUsage(null);
+    setError("");
+  }, []);
+
+  const loadUsage = useCallback(async (signal) => {
+    if (!unlocked || tab !== "usage" || !portal?.usageAvailable) return;
     setUsageLoading(true);
     setUsage(null);
     setError("");
     try {
-      const response = await fetch(`/api/viewer-portal/usage?period=${period}`, { cache: "no-store" });
+      const response = await fetch(`/api/viewer-portal/usage?period=${period}`, { cache: "no-store", signal });
+      if (signal.aborted) return;
       if (response.status === 401) {
-        setUnlocked(false);
-        setUsage(null);
+        onLocked();
         return;
       }
       const data = await response.json();
+      if (signal.aborted) return;
       if (!response.ok) throw new Error(data.error || "Usage could not be loaded");
       setUsage(data);
       setExpanded((current) => current.size ? current : new Set(data.groups[0] ? [data.groups[0].id] : []));
     } catch (requestError) {
-      setError(requestError.message);
+      if (!signal.aborted) setError(requestError.message);
     } finally {
-      setUsageLoading(false);
+      if (!signal.aborted) setUsageLoading(false);
     }
-  }, [period, unlocked]);
+  }, [period, unlocked, tab, portal?.usageAvailable, onLocked]);
 
-  useEffect(() => { loadUsage(); }, [loadUsage]);
+  useEffect(() => {
+    const controller = new AbortController();
+    loadUsage(controller.signal);
+    return () => controller.abort();
+  }, [loadUsage]);
 
   const unlock = async (event) => {
     event.preventDefault();
@@ -203,7 +217,7 @@ export default function PortalPageClient() {
     });
     const data = await response.json();
     if (!response.ok) {
-      setError(data.error || "Unable to unlock usage");
+      setError(data.error || "Unable to unlock portal");
       return;
     }
     setPassword("");
@@ -211,9 +225,13 @@ export default function PortalPageClient() {
   };
 
   const lock = async () => {
-    await fetch("/api/viewer-portal/session", { method: "DELETE" });
-    setUnlocked(false);
-    setUsage(null);
+    onLocked();
+    try {
+      const response = await fetch("/api/viewer-portal/session", { method: "DELETE" });
+      if (!response.ok) throw new Error("Session could not be ended. Please retry Lock.");
+    } catch {
+      setError("Session could not be ended. Reload and retry Lock to clear the session cookie.");
+    }
   };
 
   const totalTokens = useMemo(() => usage ? usage.summary.inputTokens + usage.summary.outputTokens : 0, [usage]);
@@ -258,23 +276,27 @@ export default function PortalPageClient() {
               </Card>
             )}
 
-            {!portal.usageAvailable ? (
-              <Card className="text-center"><p className="text-sm text-text-muted">Protected usage has not been configured.</p></Card>
+            {!portal.usageAvailable && !portal.quotaAvailable ? (
+              <Card className="text-center"><p className="text-sm text-text-muted">Protected usage and quota have not been configured.</p></Card>
             ) : !unlocked ? (
               <Card className="mx-auto w-full max-w-md" elev>
                 <div className="mb-5 text-center">
                   <span className="material-symbols-outlined rounded-full bg-brand-500/10 p-3 text-2xl text-brand-500">lock</span>
-                  <h2 className="mt-3 text-lg font-semibold">Unlock usage</h2>
+                  <h2 className="mt-3 text-lg font-semibold">Unlock viewer portal</h2>
                   <p className="mt-1 text-sm text-text-muted">Enter the shared viewer password.</p>
                 </div>
                 <form onSubmit={unlock} className="space-y-4">
-                  <Input type="password" value={password} onChange={(event) => setPassword(event.target.value)} label="Viewer password" autoComplete="current-password" required />
+                  <Input type="password" value={password} onChange={(event) => setPassword(event.target.value)} label="Viewer password" aria-label="Viewer password" autoComplete="current-password" required />
                   {error && <p className="text-sm text-danger">{error}</p>}
-                  <Button type="submit" fullWidth disabled={!password}>Unlock usage</Button>
+                  <Button type="submit" fullWidth disabled={!password}>Unlock portal</Button>
                 </form>
               </Card>
             ) : (
-              <section className="flex flex-col gap-5">
+              <div className="flex flex-col gap-5">
+                <SegmentedControl aria-label="Viewer portal view" options={[{ value: "usage", label: "Usage" }, { value: "quota", label: "Quota" }]} value={tab} onChange={setTab} className="w-full sm:w-fit" />
+                {tab === "quota" ? <QuotaView onLocked={onLocked} /> : !portal.usageAvailable ? (
+                  <Card className="text-center text-sm text-text-muted">No usage groups have been published.</Card>
+                ) : <section className="flex flex-col gap-5">
                 <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                   <div>
                     <h2 className="text-xl font-semibold tracking-tight">Published usage</h2>
@@ -309,7 +331,8 @@ export default function PortalPageClient() {
                     </div>
                   </>
                 ) : null}
-              </section>
+              </section>}
+              </div>
             )}
           </>
         )}

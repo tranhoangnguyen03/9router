@@ -2,11 +2,13 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { Button, Card, Input, SegmentedControl } from "@/shared/components";
+import QuotaTab from "./QuotaTab";
 
 const TABS = [
   { value: "general", label: "General" },
   { value: "board", label: "Announcement board" },
   { value: "groups", label: "Usage groups" },
+  { value: "quota", label: "Quota" },
 ];
 
 function Notice({ notice }) {
@@ -54,7 +56,7 @@ function GeneralTab({ portal, setPortal, saveGeneral, busy, setNotice }) {
     if (!response.ok) return setNotice({ type: "error", text: data.error || "Password could not be updated" });
     setPortal(data.portal);
     setPassword("");
-    setNotice({ type: "success", text: remove ? "Viewer password removed. Usage is now unavailable." : "Viewer password updated. Existing viewer sessions were ended." });
+    setNotice({ type: "success", text: remove ? "Viewer password removed. Usage and quota are now unavailable." : "Viewer password updated. Existing viewer sessions were ended." });
   };
 
   const copyUrl = async () => {
@@ -65,7 +67,7 @@ function GeneralTab({ portal, setPortal, saveGeneral, busy, setNotice }) {
   return (
     <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
       <div className="space-y-5">
-        <Card title="Portal availability" subtitle="The public announcement and protected usage share one page.">
+        <Card title="Portal availability" subtitle="The public announcement and protected usage/quota share one page.">
           <Switch checked={portal.enabled} onChange={(enabled) => setPortal((current) => ({ ...current, enabled }))} label="Enable viewer portal" description="When disabled, visitors see an unavailable page." />
           <div className="mt-5 flex flex-col gap-3 border-t border-border-subtle pt-5 sm:flex-row">
             <div className="min-w-0 flex-1 rounded-[10px] bg-surface-2 px-3 py-2 font-mono text-xs text-text-muted"><span className="block truncate">{portalUrl}</span></div>
@@ -86,7 +88,7 @@ function GeneralTab({ portal, setPortal, saveGeneral, busy, setNotice }) {
       <Card title="Viewer password" subtitle="Separate from dashboard authentication." className="h-fit">
         <div className="space-y-4">
           <div className={`rounded-[10px] px-3 py-2 text-sm ${portal.hasPassword ? "bg-success/10 text-success" : "bg-warning/10 text-warning"}`}>
-            {portal.hasPassword ? "Password configured" : "No password — usage unavailable"}
+            {portal.hasPassword ? "Password configured" : "No password — usage and quota unavailable"}
           </div>
           <Input type="password" label={portal.hasPassword ? "New password" : "Set password"} value={password} onChange={(event) => setPassword(event.target.value)} minLength={8} maxLength={200} autoComplete="new-password" hint="At least 8 characters. Updating it ends existing viewer sessions." />
           <Button fullWidth onClick={() => updatePassword(false)} disabled={password.length < 8}>Save password</Button>
@@ -325,7 +327,7 @@ export default function ViewerPortalAdmin() {
   return (
     <div className="flex min-w-0 flex-col gap-6 px-1 sm:px-0">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
-        <div><p className="text-xs font-semibold uppercase tracking-[0.14em] text-brand-500">Sharing</p><h1 className="mt-1 text-2xl font-semibold tracking-tight">Viewer Portal</h1><p className="mt-1 text-sm text-text-muted">Public announcements and password-protected aggregate usage.</p></div>
+        <div><p className="text-xs font-semibold uppercase tracking-[0.14em] text-brand-500">Sharing</p><h1 className="mt-1 text-2xl font-semibold tracking-tight">Viewer Portal</h1><p className="mt-1 text-sm text-text-muted">Public announcements, password-protected usage and global quota.</p></div>
         <Button variant="outline" icon="visibility" onClick={() => window.open("/portal", "_blank", "noopener,noreferrer")}>Open viewer portal</Button>
       </div>
       <SegmentedControl options={TABS} value={tab} onChange={(value) => { setTab(value); setNotice(null); }} className="w-full sm:w-fit" />
@@ -333,6 +335,7 @@ export default function ViewerPortalAdmin() {
       {tab === "general" && <GeneralTab portal={portal} setPortal={setPortal} saveGeneral={saveGeneral} busy={busy} setNotice={setNotice} />}
       {tab === "board" && <BoardTab portal={portal} setPortal={setPortal} setNotice={setNotice} />}
       {tab === "groups" && <GroupsTab portal={portal} apiKeys={apiKeys} setPortal={setPortal} setNotice={setNotice} />}
+      {tab === "quota" && <QuotaTab key={JSON.stringify(portal.quotaAccounts)} portal={portal} setPortal={setPortal} setNotice={setNotice} />}
     </div>
   );
 }
