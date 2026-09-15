@@ -166,7 +166,9 @@ export function canonicalizeUsage(usage) {
 
   const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
   const completion = num(usage.completion_tokens ?? usage.output_tokens);
-  const reasoning = num(usage.reasoning_tokens);
+  const reasoning = num(
+    usage.reasoning_tokens ?? usage.completion_tokens_details?.reasoning_tokens ?? usage.output_tokens_details?.reasoning_tokens
+  );
   // Fall back to the nested prompt_tokens_details.cache_creation_tokens shape
   // (buildUsage()'s OpenAI-forwarding format) when the top-level field is
   // absent, so callers that pass a buildUsage() object through don't silently
@@ -174,6 +176,10 @@ export function canonicalizeUsage(usage) {
   const cacheCreation = num(usage.cache_creation_input_tokens ?? usage.prompt_tokens_details?.cache_creation_tokens);
 
   let prompt = num(usage.prompt_tokens ?? usage.input_tokens);
+  // Responses API reports cache reads as input_tokens_details.cached_tokens (a subset
+  // of input_tokens, like OpenAI). Normalize it so codex non-streaming doesn't drop cache
+  // reads and over-charge them at the full input rate.
+  const nestedCached = num(usage.prompt_tokens_details?.cached_tokens ?? usage.input_tokens_details?.cached_tokens);
   let cached;
 
   // Claude path: prompt excludes cache; cache_read_input_tokens and/or
@@ -189,11 +195,12 @@ export function canonicalizeUsage(usage) {
     cached = num(usage.cache_read_input_tokens);
     prompt = prompt + cached + cacheCreation;
   } else {
-    // OpenAI/Gemini path (or already-canonical input): prompt already includes cached_tokens.
-    // Mirror the cacheCreation fallback above: buildUsage() only ever emits the
-    // nested prompt_tokens_details.cached_tokens shape, so without this the
-    // cache-read count is silently dropped on every buildUsage()-derived usage.
-    cached = num(usage.cached_tokens ?? usage.prompt_tokens_details?.cached_tokens);
+    // OpenAI/Gemini/Responses path (or already-canonical input): prompt already
+    // includes cached_tokens. Mirror the cacheCreation fallback above:
+    // buildUsage() only emits the nested prompt_tokens_details.cached_tokens
+    // shape, and Responses API reports input_tokens_details.cached_tokens, so
+    // without these fallbacks the cache-read count is silently dropped.
+    cached = num(usage.cached_tokens ?? nestedCached);
   }
 
   const result = {
@@ -291,12 +298,17 @@ export function extractUsage(chunk) {
   // Antigravity wraps usageMetadata inside response: { response: { usageMetadata: {...} } }
   const usageMeta = chunk.usageMetadata || chunk.response?.usageMetadata;
   if (usageMeta && typeof usageMeta === "object") {
+    const thoughts = usageMeta.thoughtsTokenCount || 0;
+    // Gemini reports candidatesTokenCount (visible output) and thoughtsTokenCount
+    // (thinking) as SEPARATE buckets. Fold thoughts into completion so
+    // reasoning_tokens stays a subset of completion_tokens (the canonical
+    // convention pricing/display assume) — mirrors usage.js gemini().
     return normalizeUsage({
       prompt_tokens: usageMeta.promptTokenCount || 0,
-      completion_tokens: usageMeta.candidatesTokenCount || 0,
+      completion_tokens: (usageMeta.candidatesTokenCount || 0) + thoughts,
       total_tokens: usageMeta.totalTokenCount,
       cached_tokens: usageMeta.cachedContentTokenCount,
-      reasoning_tokens: usageMeta.thoughtsTokenCount
+      reasoning_tokens: thoughts
     });
   }
 

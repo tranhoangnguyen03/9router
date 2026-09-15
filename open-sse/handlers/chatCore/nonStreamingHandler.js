@@ -203,13 +203,16 @@ export function translateNonStreamingResponse(responseBody, targetFormat, source
     };
 
     if (usage) {
+      const thoughts = usage.thoughtsTokenCount || 0;
+      // Thinking tokens are OUTPUT, not input: keep them out of prompt_tokens and
+      // fold them into completion_tokens as a reasoning subset.
       result.usage = {
-        prompt_tokens: (usage.promptTokenCount || 0) + (usage.thoughtsTokenCount || 0),
-        completion_tokens: usage.candidatesTokenCount || 0,
+        prompt_tokens: usage.promptTokenCount || 0,
+        completion_tokens: (usage.candidatesTokenCount || 0) + thoughts,
         total_tokens: usage.totalTokenCount || 0
       };
-      if (usage.thoughtsTokenCount > 0) {
-        result.usage.completion_tokens_details = { reasoning_tokens: usage.thoughtsTokenCount };
+      if (thoughts > 0) {
+        result.usage.completion_tokens_details = { reasoning_tokens: thoughts };
       }
     }
     return result;

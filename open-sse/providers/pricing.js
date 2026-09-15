@@ -410,15 +410,15 @@ export function formatCost(cost) {
 }
 
 /**
- * Calculate cost from tokens and pricing
+ * Calculate cost from tokens and pricing, split by component.
  * @param {object} tokens
  * @param {object} pricing
- * @returns {number} cost in dollars
+ * @returns {{inputCost:number, cachedCost:number, outputCost:number, total:number}}
  */
-export function calculateCostFromTokens(tokens, pricing) {
-  if (!tokens || !pricing) return 0;
-
-  let cost = 0;
+export function calculateCostBreakdown(tokens, pricing) {
+  if (!tokens || !pricing) {
+    return { inputCost: 0, cachedCost: 0, outputCost: 0, total: 0 };
+  }
 
   const inputTokens = tokens.prompt_tokens || tokens.input_tokens || 0;
   const cachedTokens = tokens.cached_tokens || tokens.cache_read_input_tokens || 0;
@@ -427,23 +427,38 @@ export function calculateCostFromTokens(tokens, pricing) {
   // are subsets, so subtract both to avoid charging them at the full input rate.
   const nonCachedInput = Math.max(0, inputTokens - cachedTokens - cacheCreationTokens);
 
-  cost += nonCachedInput * (pricing.input / 1000000);
+  // Input side: full-rate input + cache-write (creation). Cache-read is broken out
+  // separately so the three table columns (input/cached/output) sum to the total.
+  const inputCost =
+    nonCachedInput * (pricing.input / 1000000) +
+    cacheCreationTokens * ((pricing.cache_creation || pricing.input) / 1000000);
+  const cachedCost = cachedTokens * ((pricing.cached || pricing.input) / 1000000);
 
-  if (cachedTokens > 0) {
-    cost += cachedTokens * ((pricing.cached || pricing.input) / 1000000);
-  }
-
+  // Output side: reasoning_tokens is a SUBSET of completion/output tokens (OpenAI
+  // Responses, Claude and Gemini all count thinking inside the output total), so
+  // charging output rate on the whole total AND reasoning rate on top would
+  // double-count reasoning. Charge output rate only on the non-reasoning remainder.
   const outputTokens = tokens.completion_tokens || tokens.output_tokens || 0;
-  cost += outputTokens * (pricing.output / 1000000);
-
   const reasoningTokens = tokens.reasoning_tokens || 0;
-  if (reasoningTokens > 0) {
-    cost += reasoningTokens * ((pricing.reasoning || pricing.output) / 1000000);
-  }
+  const nonReasoningOutput = Math.max(0, outputTokens - reasoningTokens);
+  const outputCost =
+    nonReasoningOutput * (pricing.output / 1000000) +
+    reasoningTokens * ((pricing.reasoning || pricing.output) / 1000000);
 
-  if (cacheCreationTokens > 0) {
-    cost += cacheCreationTokens * ((pricing.cache_creation || pricing.input) / 1000000);
-  }
+  return {
+    inputCost,
+    cachedCost,
+    outputCost,
+    total: inputCost + cachedCost + outputCost,
+  };
+}
 
-  return cost;
+/**
+ * Calculate cost from tokens and pricing
+ * @param {object} tokens
+ * @param {object} pricing
+ * @returns {number} cost in dollars
+ */
+export function calculateCostFromTokens(tokens, pricing) {
+  return calculateCostBreakdown(tokens, pricing).total;
 }

@@ -81,4 +81,28 @@ describe("cached-token end-to-end (persist + aggregate + cost)", () => {
     expect(hist[0].tokens.prompt_tokens).toBe(1000);
     expect(hist[0].tokens.cached_tokens).toBe(600);
   });
+
+  it("keeps a per-model breakdown for one account using multiple models (daily summary)", async () => {
+    await db.saveRequestUsage({
+      provider: "anthropic",
+      model: "claude-A",
+      connectionId: "c-multi",
+      tokens: { prompt_tokens: 100, completion_tokens: 20 },
+      status: "ok",
+    });
+    await db.saveRequestUsage({
+      provider: "anthropic",
+      model: "claude-B",
+      connectionId: "c-multi",
+      tokens: { prompt_tokens: 200, completion_tokens: 40 },
+      status: "ok",
+    });
+
+    const stats = await db.getUsageStats("7d");
+    // Two distinct (model) account buckets, not one collapsed under the last model.
+    const keys = Object.values(stats.byAccount).filter((a) => a.connectionId === "c-multi");
+    expect(keys.length).toBe(2);
+    const models = keys.map((a) => a.rawModel).sort();
+    expect(models).toEqual(["claude-A", "claude-B"]);
+  });
 });

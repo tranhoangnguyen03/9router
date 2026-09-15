@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { canonicalizeUsage, extractUsage, mergeUsage } from "../../open-sse/utils/usageTracking.js";
-import { calculateCostFromTokens } from "../../open-sse/providers/pricing.js";
+import { calculateCostFromTokens, calculateCostBreakdown } from "../../open-sse/providers/pricing.js";
 import { buildUsage, toOpenAIUsage } from "../../open-sse/translator/concerns/usage.js";
 
 // Canonical convention (single source of truth for storage + cost):
@@ -100,6 +100,19 @@ describe("canonicalizeUsage", () => {
     expect(out.cached_tokens).toBe(0);
     expect(out.cache_creation_input_tokens).toBe(500);
   });
+
+  it("normalizes Responses API nested cache/reasoning fields", () => {
+    const out = canonicalizeUsage({
+      input_tokens: 1000,          // cache-inclusive
+      output_tokens: 200,
+      input_tokens_details: { cached_tokens: 600 },
+      output_tokens_details: { reasoning_tokens: 40 },
+    });
+    expect(out.prompt_tokens).toBe(1000);
+    expect(out.cached_tokens).toBe(600);
+    expect(out.completion_tokens).toBe(200);
+    expect(out.reasoning_tokens).toBe(40);
+  });
 });
 
 describe("calculateCostFromTokens (canonical inclusive convention)", () => {
@@ -129,6 +142,27 @@ describe("calculateCostFromTokens (canonical inclusive convention)", () => {
   it("matches plain input pricing when no cache present", () => {
     const cost = calculateCostFromTokens({ prompt_tokens: 100, completion_tokens: 50 }, pricing);
     expect(cost).toBeCloseTo((100 * 3 + 50 * 15) / 1_000_000, 12);
+  });
+});
+
+describe("calculateCostBreakdown (reasoning is a subset of output)", () => {
+  const pricing = { input: 3, output: 15, cached: 0.3, reasoning: 60, cache_creation: 3.75 };
+
+  it("does not double-charge reasoning tokens already counted in output", () => {
+    // output=100 includes 90 reasoning + 10 visible text
+    const b = calculateCostBreakdown(
+      { prompt_tokens: 50, completion_tokens: 100, reasoning_tokens: 90 },
+      pricing
+    );
+    const expected = (50 * 3 + 10 * 15 + 90 * 60) / 1_000_000;
+    expect(b.total).toBeCloseTo(expected, 12);
+    expect(b.outputCost).toBeCloseTo((10 * 15 + 90 * 60) / 1_000_000, 12);
+    expect(b.inputCost + b.cachedCost + b.outputCost).toBeCloseTo(b.total, 12);
+  });
+
+  it("total matches calculateCostFromTokens", () => {
+    const tokens = { prompt_tokens: 50, completion_tokens: 100, reasoning_tokens: 90 };
+    expect(calculateCostBreakdown(tokens, pricing).total).toBeCloseTo(calculateCostFromTokens(tokens, pricing), 12);
   });
 });
 
@@ -173,6 +207,38 @@ describe("Anthropic streaming usage (message_start carries cache, message_delta 
     expect(merged.prompt_tokens).toBe(100);
     expect(merged.cache_read_input_tokens).toBe(200);
     expect(merged.completion_tokens).toBe(50);
+  });
+});
+
+describe("Gemini/Antigravity streaming usage (thinking folds into completion)", () => {
+  it("extractUsage folds the separate thoughts bucket into completion_tokens", () => {
+    const u = extractUsage({
+      usageMetadata: {
+        promptTokenCount: 100,
+        candidatesTokenCount: 30,
+        thoughtsTokenCount: 40,
+        totalTokenCount: 170,
+        cachedContentTokenCount: 10,
+      },
+    });
+    expect(u.completion_tokens).toBe(70); // 30 candidates + 40 thoughts
+    expect(u.reasoning_tokens).toBe(40);
+    expect(u.prompt_tokens).toBe(100);
+  });
+
+  it("keeps reasoning a subset of completion through pricing (no under/over charge)", () => {
+    const canon = canonicalizeUsage({
+      prompt_tokens: 100,
+      completion_tokens: 70,
+      cached_tokens: 10,
+      reasoning_tokens: 40,
+    });
+    const pricing = { input: 3, output: 15, cached: 0.3, reasoning: 60, cache_creation: 3.75 };
+    const b = calculateCostBreakdown(canon, pricing);
+    const expected =
+      (90 * 3 + 10 * 0.3 + 30 * 15 + 40 * 60) / 1_000_000;
+    expect(b.total).toBeCloseTo(expected, 12);
+    expect(b.outputCost).toBeCloseTo((30 * 15 + 40 * 60) / 1_000_000, 12);
   });
 });
 
