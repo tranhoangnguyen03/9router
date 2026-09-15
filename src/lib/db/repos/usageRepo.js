@@ -515,7 +515,7 @@ export async function getUsageStats(period = "all") {
         const apiKeyMasked = maskApiKey(apiKeyVal);
         const apiKeyKey = apiKeyMasked || "local-no-key";
         if (!stats.byApiKey[akKey]) {
-          stats.byApiKey[akKey] = { requests: 0, promptTokens: 0, completionTokens: 0, cachedTokens: 0, cost: 0, inputCost: 0, cachedCost: 0, outputCost: 0, rawModel, provider: providerDisplayName, apiKeyMasked, keyName, apiKeyKey, lastUsed: dateKey };
+          stats.byApiKey[akKey] = { requests: 0, promptTokens: 0, completionTokens: 0, cachedTokens: 0, cost: 0, inputCost: 0, cachedCost: 0, outputCost: 0, rawModel, provider: providerDisplayName, apiKeyMasked, keyName, apiKeyKey, apiKeyId: keyInfo?.id || null, lastUsed: dateKey };
         }
         stats.byApiKey[akKey].requests += ak.requests || 0;
         stats.byApiKey[akKey].promptTokens += ak.promptTokens || 0;
@@ -567,7 +567,7 @@ export async function getUsageStats(period = "all") {
 
       const apiKeyKey = (e.apiKey && typeof e.apiKey === "string")
         ? `${e.apiKey}|${e.model}|${e.provider || "unknown"}`
-        : "local-no-key";
+        : `local-no-key|${e.model}|${e.provider || "unknown"}`;
       if (stats.byApiKey[apiKeyKey] && new Date(ts) > new Date(stats.byApiKey[apiKeyKey].lastUsed)) stats.byApiKey[apiKeyKey].lastUsed = ts;
 
       const endpoint = e.endpoint || "Unknown";
@@ -649,22 +649,32 @@ export async function getUsageStats(period = "all") {
         if (new Date(r.timestamp) > new Date(stats.byAccount[accountKey].lastUsed)) stats.byAccount[accountKey].lastUsed = r.timestamp;
       }
 
+      // Key rows by the FULL api key + model + provider — identical to
+      // aggregateEntryToDay's daily buckets. Keying by maskApiKey() here merged
+      // every key on one machine (all share the sk-{machineId}- prefix, so the
+      // first 8 chars are identical) into a single row, mis-attributing tokens
+      // and cost between keys in the Today/24h view.
+      const apiKeyKey = r.apiKey && typeof r.apiKey === "string"
+        ? `${r.apiKey}|${r.model}|${r.provider || "unknown"}`
+        : `local-no-key|${r.model}|${r.provider || "unknown"}`;
       if (r.apiKey && typeof r.apiKey === "string") {
         const keyInfo = apiKeyMap[r.apiKey];
         const keyName = keyInfo?.name || r.apiKey.slice(0, 8) + "...";
         const apiKeyMasked = maskApiKey(r.apiKey);
-        const akKey = `${apiKeyMasked}|${r.model}|${r.provider || "unknown"}`;
-        if (!stats.byApiKey[akKey]) {
-          stats.byApiKey[akKey] = { requests: 0, promptTokens: 0, completionTokens: 0, cachedTokens: 0, cost: 0, inputCost: 0, cachedCost: 0, outputCost: 0, rawModel: r.model, provider: providerDisplayName, apiKeyMasked, keyName, apiKeyKey: apiKeyMasked, lastUsed: r.timestamp };
+        if (!stats.byApiKey[apiKeyKey]) {
+          stats.byApiKey[apiKeyKey] = { requests: 0, promptTokens: 0, completionTokens: 0, cachedTokens: 0, cost: 0, inputCost: 0, cachedCost: 0, outputCost: 0, rawModel: r.model, provider: providerDisplayName, apiKeyMasked, keyName, apiKeyKey: apiKeyMasked, apiKeyId: keyInfo?.id || null, lastUsed: r.timestamp };
         }
-        const ake = stats.byApiKey[akKey];
+        const ake = stats.byApiKey[apiKeyKey];
         ake.requests++; ake.promptTokens += promptTokens; ake.completionTokens += completionTokens; ake.cachedTokens += cachedTokens; ake.cost += entryCost; ake.inputCost += inputCost; ake.cachedCost += cachedCost; ake.outputCost += outputCost;
         if (new Date(r.timestamp) > new Date(ake.lastUsed)) ake.lastUsed = r.timestamp;
       } else {
-        if (!stats.byApiKey["local-no-key"]) {
-          stats.byApiKey["local-no-key"] = { requests: 0, promptTokens: 0, completionTokens: 0, cachedTokens: 0, cost: 0, inputCost: 0, cachedCost: 0, outputCost: 0, rawModel: r.model, provider: providerDisplayName, apiKeyMasked: null, keyName: "Local (No API Key)", apiKeyKey: "local-no-key", lastUsed: r.timestamp };
+        // Per (model|provider) row — same composite as the daily path, so local
+        // usage keeps its per-model breakdown instead of collapsing every
+        // model into whichever one was seen first.
+        if (!stats.byApiKey[apiKeyKey]) {
+          stats.byApiKey[apiKeyKey] = { requests: 0, promptTokens: 0, completionTokens: 0, cachedTokens: 0, cost: 0, inputCost: 0, cachedCost: 0, outputCost: 0, rawModel: r.model, provider: providerDisplayName, apiKeyMasked: null, keyName: "Local (No API Key)", apiKeyKey: "local-no-key", apiKeyId: null, lastUsed: r.timestamp };
         }
-        const ake = stats.byApiKey["local-no-key"];
+        const ake = stats.byApiKey[apiKeyKey];
         ake.requests++; ake.promptTokens += promptTokens; ake.completionTokens += completionTokens; ake.cachedTokens += cachedTokens; ake.cost += entryCost; ake.inputCost += inputCost; ake.cachedCost += cachedCost; ake.outputCost += outputCost;
         if (new Date(r.timestamp) > new Date(ake.lastUsed)) ake.lastUsed = r.timestamp;
       }
@@ -679,6 +689,19 @@ export async function getUsageStats(period = "all") {
       if (new Date(r.timestamp) > new Date(epe.lastUsed)) epe.lastUsed = r.timestamp;
     }
   }
+
+  // Response map keys must not carry raw API keys — the stats object is
+  // serialized as-is by /api/usage/stats. Aggregation above keys by the full
+  // key (masked prefixes collide: every generated key shares sk-{machineId}-),
+  // so re-key here by the key's unique DB id with a masked fallback.
+  // ponytail: deleted keys sharing an 8-char prefix can still collide per model;
+  // store a surrogate key column if that ever matters.
+  const byApiKeySafe = {};
+  for (const row of Object.values(stats.byApiKey)) {
+    const safeId = row.apiKeyId || row.apiKeyKey || "local-no-key";
+    byApiKeySafe[`${safeId}|${row.rawModel}`] = row;
+  }
+  stats.byApiKey = byApiKeySafe;
 
   stats.totalRequests = Object.values(stats.byProvider).reduce((sum, p) => sum + (p.requests || 0), 0);
   return stats;
