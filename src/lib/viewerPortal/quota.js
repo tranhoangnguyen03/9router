@@ -40,13 +40,16 @@ export function sanitizeQuotas(data) {
     if (!quota || typeof quota !== "object" || Array.isArray(quota)) return [];
     const used = number(quota.used);
     const total = number(quota.total);
+    const isCreditBalance = quota.isCreditBalance === true;
+    const currency = typeof quota.currency === "string" && /^[A-Z]{3}$/.test(quota.currency) ? quota.currency : null;
     const unlimited = quota.unlimited === true;
     const percentage = number(quota.remainingPercentage)
       ?? (used !== null && total > 0 ? Math.max(0, (total - used) / total * 100) : null);
     return [{
       name: name.slice(0, 120), used, total, unlimited,
-      remainingPercentage: unlimited || percentage === null ? null : Math.min(100, percentage),
-      resetAt: date(quota.resetAt), recurring: quota.recurring !== false,
+      isCreditBalance, currency: isCreditBalance ? currency : null,
+      remainingPercentage: isCreditBalance || unlimited || percentage === null ? null : Math.min(100, percentage),
+      resetAt: isCreditBalance ? null : date(quota.resetAt), recurring: quota.recurring !== false,
     }];
   });
 }

@@ -44,7 +44,7 @@ export default function QuotaView({ onLocked }) {
         <div>
           <h2 className="text-xl font-semibold tracking-tight">Global quota</h2>
           <p className="text-sm text-text-muted">Shared provider capacity · Same view for everyone</p>
-          <p className="mt-1 text-xs text-text-muted">Checks refresh every minute. Providers may return cached readings.</p>
+          <p className="mt-1 text-xs text-text-muted">Provider checks run at most once a minute; Refresh may reuse the latest reading.</p>
         </div>
         <Button variant="secondary" size="sm" onClick={refresh} disabled={loading} icon="refresh">{loading ? "Checking…" : "Refresh"}</Button>
       </div>
@@ -63,11 +63,15 @@ export default function QuotaView({ onLocked }) {
                 <div key={quotaIndex} className="space-y-1.5">
                   <div className="flex items-start justify-between gap-3 text-sm">
                     <span className="break-words font-medium">{quota.name}</span>
-                    <span className="shrink-0 tabular-nums">{quota.unlimited ? "Unlimited" : quota.remainingPercentage === null ? "Unknown" : `${number.format(quota.remainingPercentage)}% remaining`}</span>
+                    <span className="shrink-0 tabular-nums">{quota.isCreditBalance ? quota.total === null ? "Unknown balance" : `${number.format(quota.total)} ${quota.currency || "credit"} available` : quota.unlimited ? "Unlimited" : quota.remainingPercentage === null ? "Unknown" : `${number.format(quota.remainingPercentage)}% remaining`}</span>
                   </div>
-                  {!quota.unlimited && quota.remainingPercentage !== null && <progress aria-label={`${quota.name} remaining`} value={quota.remainingPercentage} max={100} className="h-2 w-full accent-brand-500" />}
-                  <p className="text-xs text-text-muted">{quota.used === null ? "Unknown" : number.format(quota.used)} used{!quota.unlimited && quota.total !== null ? ` / ${number.format(quota.total)}` : ""}</p>
-                  <p className="text-xs text-text-muted">{quota.recurring ? "Resets" : "Expires"}: {quota.resetAt ? date(quota.resetAt) : "Unknown"}</p>
+                  {!quota.isCreditBalance && (
+                    <>
+                      {!quota.unlimited && quota.remainingPercentage !== null && <progress aria-label={`${quota.name} remaining`} value={quota.remainingPercentage} max={100} className="h-2 w-full accent-brand-500" />}
+                      <p className="text-xs text-text-muted">{quota.used === null ? "Unknown" : number.format(quota.used)} used{!quota.unlimited && quota.total !== null ? ` / ${number.format(quota.total)}` : ""}</p>
+                      <p className="text-xs text-text-muted">{quota.recurring ? "Resets" : "Expires"}: {quota.resetAt ? date(quota.resetAt) : "Unknown"}</p>
+                    </>
+                  )}
                 </div>
               ))}
             </div>

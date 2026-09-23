@@ -94,6 +94,15 @@ describe("portal quota contract", () => {
     expect(rows.some(r => r.name === "broken")).toBe(false);
   });
 
+  it("marks DeepSeek credit as an available currency balance, not a percentage quota", () => {
+    const [credit] = quota.sanitizeQuotas({ quotas: {
+      "Balance (USD)": { used: 0, total: 12.5, remainingPercentage: 100, isCreditBalance: true, currency: "USD", resetAt: "2026-09-13T10:00:00Z", secret: "private" },
+    } });
+    expect(credit).toMatchObject({ total: 12.5, isCreditBalance: true, currency: "USD", remainingPercentage: null, resetAt: null });
+    expect(JSON.stringify(credit)).not.toContain("private");
+    expect(quota.sanitizeQuotas({ quotas: { credit: { isCreditBalance: true, currency: "<unsafe>", total: 1 } } })[0].currency).toBeNull();
+  });
+
   it("isolates provider failures and does not expose their messages", async () => {
     mocks.upstream.mockResolvedValue(Response.json({ error: "private-token private@example.com" }, { status: 500 }));
     const result = await quota.getPortalQuota();

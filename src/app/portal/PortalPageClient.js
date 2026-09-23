@@ -12,6 +12,7 @@ import {
 } from "recharts";
 import { Button, Card, Input, SegmentedControl, ThemeToggle } from "@/shared/components";
 import QuotaView from "./QuotaView";
+import { sortUsageGroups, totalTokens } from "./sortUsage";
 
 const PERIODS = [
   { value: "24h", label: "24 hours" },
@@ -23,6 +24,11 @@ const PERIODS = [
 const compact = new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 });
 const integer = new Intl.NumberFormat("en-US");
 const money = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 2, maximumFractionDigits: 4 });
+const TREND_METRICS = [
+  { key: "tokens", label: "Tokens", color: "#E56A4A", format: (value) => formatNumber(value) },
+  { key: "estimatedCost", label: "Est. cost", color: "#E0A338", format: (value) => money.format(value) },
+  { key: "requests", label: "Requests", color: "#38A89A", format: (value) => formatNumber(value) },
+];
 
 function formatNumber(value) {
   return value >= 10_000 ? compact.format(value) : integer.format(value || 0);
@@ -50,35 +56,41 @@ function SummaryCard({ icon, label, value, detail }) {
 }
 
 function UsageChart({ data }) {
-  const hasData = data.some((item) => item.tokens > 0 || item.requests > 0);
+  const [metric, setMetric] = useState("tokens");
+  const view = TREND_METRICS.find((item) => item.key === metric);
+  const hasData = data.some((item) => item[metric] > 0);
   return (
     <Card padding="sm">
-      <div className="mb-4 flex items-center justify-between gap-3">
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
         <div>
           <h2 className="font-semibold text-text-main">Usage trend</h2>
           <p className="text-xs text-text-muted">Published keys combined</p>
         </div>
-        <span className="rounded-full bg-brand-500/10 px-2.5 py-1 text-xs font-semibold text-brand-500">Tokens</span>
+        <div role="group" aria-label="Usage trend metric" className="flex flex-wrap gap-1">
+          {TREND_METRICS.map((item) => (
+            <button key={item.key} type="button" aria-pressed={metric === item.key} onClick={() => setMetric(item.key)} className={`rounded-lg px-2.5 py-1 text-xs font-semibold ${metric === item.key ? "bg-brand-500/10 text-brand-500" : "text-text-muted hover:bg-surface-2"}`}>{item.label}</button>
+          ))}
+        </div>
       </div>
       {!hasData ? (
-        <div className="flex h-56 items-center justify-center text-sm text-text-muted">No usage in this period</div>
+        <div className="flex h-56 items-center justify-center text-sm text-text-muted">No {view.label.toLowerCase()} in this period</div>
       ) : (
         <ResponsiveContainer width="100%" height={240}>
           <AreaChart data={data} margin={{ top: 8, right: 8, left: -12, bottom: 0 }}>
             <defs>
               <linearGradient id="portalTokens" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="5%" stopColor="#E56A4A" stopOpacity={0.32} />
-                <stop offset="95%" stopColor="#E56A4A" stopOpacity={0} />
+                <stop offset="5%" stopColor={view.color} stopOpacity={0.32} />
+                <stop offset="95%" stopColor={view.color} stopOpacity={0} />
               </linearGradient>
             </defs>
             <CartesianGrid strokeDasharray="3 3" strokeOpacity={0.1} />
             <XAxis dataKey="label" tick={{ fontSize: 10, fill: "currentColor", fillOpacity: 0.55 }} tickLine={false} axisLine={false} interval="preserveStartEnd" />
-            <YAxis tickFormatter={formatNumber} tick={{ fontSize: 10, fill: "currentColor", fillOpacity: 0.55 }} tickLine={false} axisLine={false} />
+            <YAxis tickFormatter={view.format} tick={{ fontSize: 10, fill: "currentColor", fillOpacity: 0.55 }} tickLine={false} axisLine={false} />
             <Tooltip
-              formatter={(value, name) => name === "tokens" ? [integer.format(value), "Tokens"] : [value, name]}
+              formatter={(value) => [view.key === "tokens" || view.key === "requests" ? integer.format(value) : view.format(value), view.label]}
               contentStyle={{ background: "var(--color-surface)", border: "1px solid var(--color-border)", borderRadius: 10, fontSize: 12 }}
             />
-            <Area type="monotone" dataKey="tokens" stroke="#E56A4A" strokeWidth={2} fill="url(#portalTokens)" dot={false} />
+            <Area type="monotone" dataKey={view.key} stroke={view.color} strokeWidth={2} fill="url(#portalTokens)" dot={false} />
           </AreaChart>
         </ResponsiveContainer>
       )}
@@ -97,8 +109,10 @@ function UsageGroup({ group, expanded, onToggle }) {
             <span className="rounded-full bg-surface-2 px-2 py-0.5 text-xs text-text-muted">{group.keyCount} {group.keyCount === 1 ? "key" : "keys"}</span>
           </div>
           <p className="mt-1 text-xs text-text-muted">Last used {formatDate(group.lastUsed)}</p>
+          <p className="mt-1 text-xs text-text-muted sm:hidden">{formatNumber(totalTokens(group))} tokens · {money.format(group.estimatedCost || 0)} est. cost</p>
         </div>
         <div className="hidden gap-8 text-right sm:flex">
+          <div><p className="text-xs text-text-muted">Tokens</p><p className="font-semibold text-text-main">{formatNumber(totalTokens(group))}</p></div>
           <div><p className="text-xs text-text-muted">Requests</p><p className="font-semibold text-text-main">{formatNumber(group.requests)}</p></div>
           <div><p className="text-xs text-text-muted">Est. cost</p><p className="font-semibold text-text-main">{money.format(group.estimatedCost || 0)}</p></div>
         </div>
@@ -106,12 +120,13 @@ function UsageGroup({ group, expanded, onToggle }) {
       {expanded && (
         <div className="border-t border-border-subtle">
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[920px] text-sm">
+            <table className="w-full min-w-[1040px] text-sm">
               <thead className="bg-surface-2/60 text-left text-xs uppercase tracking-wide text-text-muted">
                 <tr>
                   <th className="px-5 py-3 font-semibold">API key</th>
                   <th className="px-4 py-3 font-semibold">Models / providers</th>
                   <th className="px-4 py-3 text-right font-semibold">Requests</th>
+                  <th className="px-4 py-3 text-right font-semibold">Total tokens</th>
                   <th className="px-4 py-3 text-right font-semibold">Input</th>
                   <th className="px-4 py-3 text-right font-semibold">Output</th>
                   <th className="px-4 py-3 text-right font-semibold">Cached</th>
@@ -124,6 +139,7 @@ function UsageGroup({ group, expanded, onToggle }) {
                   <tr key={key.id} className="hover:bg-surface-2/30">
                     <td className="px-5 py-4">
                       <div className="font-medium text-text-main">{key.name}</div>
+                      <div className="text-xs text-text-muted sm:hidden">{formatNumber(totalTokens(key))} tokens · {money.format(key.estimatedCost || 0)} est. cost</div>
                       {!key.active && <span className="text-xs text-warning">Inactive</span>}
                     </td>
                     <td className="max-w-[260px] px-4 py-4 text-xs text-text-muted">
@@ -131,6 +147,7 @@ function UsageGroup({ group, expanded, onToggle }) {
                       <div className="mt-1 truncate" title={key.providers.join(", ")}>{key.providers.join(", ") || "No providers"}</div>
                     </td>
                     <td className="px-4 py-4 text-right tabular-nums">{formatNumber(key.requests)}</td>
+                    <td className="px-4 py-4 text-right tabular-nums" title={integer.format(totalTokens(key))}>{formatNumber(totalTokens(key))}</td>
                     <td className="px-4 py-4 text-right tabular-nums">{formatNumber(key.inputTokens)}</td>
                     <td className="px-4 py-4 text-right tabular-nums">{formatNumber(key.outputTokens)}</td>
                     <td className="px-4 py-4 text-right tabular-nums">{formatNumber(key.cachedTokens)}</td>
@@ -138,7 +155,7 @@ function UsageGroup({ group, expanded, onToggle }) {
                     <td className="px-5 py-4 text-xs text-text-muted">{formatDate(key.lastUsed)}</td>
                   </tr>
                 ))}
-                {!group.keys.length && <tr><td colSpan="8" className="px-5 py-8 text-center text-text-muted">No published keys in this group</td></tr>}
+                {!group.keys.length && <tr><td colSpan="9" className="px-5 py-8 text-center text-text-muted">No published keys in this group</td></tr>}
               </tbody>
             </table>
           </div>
@@ -153,9 +170,10 @@ export default function PortalPageClient() {
   const [unlocked, setUnlocked] = useState(false);
   const [password, setPassword] = useState("");
   const [period, setPeriod] = useState("7d");
+  const [sortBy, setSortBy] = useState("published");
   const [usage, setUsage] = useState(null);
   const [tab, setTab] = useState("usage");
-  const [expanded, setExpanded] = useState(new Set());
+  const [expanded, setExpanded] = useState(null);
   const [loading, setLoading] = useState(true);
   const [usageLoading, setUsageLoading] = useState(false);
   const [error, setError] = useState("");
@@ -174,6 +192,7 @@ export default function PortalPageClient() {
   const onLocked = useCallback(() => {
     setUnlocked(false);
     setUsage(null);
+    setExpanded(null);
     setError("");
   }, []);
 
@@ -193,7 +212,12 @@ export default function PortalPageClient() {
       if (signal.aborted) return;
       if (!response.ok) throw new Error(data.error || "Usage could not be loaded");
       setUsage(data);
-      setExpanded((current) => current.size ? current : new Set(data.groups[0] ? [data.groups[0].id] : []));
+      setExpanded((current) => {
+        if (current === null) return new Set(data.groups[0] ? [data.groups[0].id] : []);
+        const valid = new Set(data.groups.map((group) => group.id));
+        const kept = new Set([...current].filter((id) => valid.has(id)));
+        return kept.size || !current.size ? kept : new Set(data.groups[0] ? [data.groups[0].id] : []);
+      });
     } catch (requestError) {
       if (!signal.aborted) setError(requestError.message);
     } finally {
@@ -234,7 +258,8 @@ export default function PortalPageClient() {
     }
   };
 
-  const totalTokens = useMemo(() => usage ? usage.summary.inputTokens + usage.summary.outputTokens : 0, [usage]);
+  const summaryTokens = useMemo(() => usage ? totalTokens(usage.summary) : 0, [usage]);
+  const sortedGroups = useMemo(() => usage ? sortUsageGroups(usage.groups, sortBy) : [], [usage, sortBy]);
 
   if (loading) return <div className="flex min-h-screen items-center justify-center text-sm text-text-muted">Loading portal…</div>;
 
@@ -311,18 +336,26 @@ export default function PortalPageClient() {
                   <>
                     <div className="grid gap-3 md:grid-cols-3">
                       <SummaryCard icon="send" label="Requests" value={formatNumber(usage.summary.requests)} detail={`${usage.summary.models.length} models · ${usage.summary.providers.length} providers`} />
-                      <SummaryCard icon="token" label="Tokens" value={formatNumber(totalTokens)} detail={`${formatNumber(usage.summary.inputTokens)} in · ${formatNumber(usage.summary.outputTokens)} out · ${formatNumber(usage.summary.cachedTokens)} cached`} />
+                      <SummaryCard icon="token" label="Tokens" value={formatNumber(summaryTokens)} detail={`${formatNumber(usage.summary.inputTokens)} in · ${formatNumber(usage.summary.outputTokens)} out · ${formatNumber(usage.summary.cachedTokens)} cached`} />
                       <SummaryCard icon="payments" label="Estimated cost" value={money.format(usage.summary.estimatedCost || 0)} detail={`Last used ${formatDate(usage.summary.lastUsed)}`} />
                     </div>
                     <UsageChart data={usage.trend} />
                     <div className="space-y-3">
-                      {usage.groups.map((group) => (
+                      <label className="flex flex-wrap items-center gap-2 text-sm text-text-muted">
+                        Sort groups and keys
+                        <select value={sortBy} onChange={(event) => setSortBy(event.target.value)} className="rounded-lg border border-border bg-surface px-3 py-2 text-text-main">
+                          <option value="published">Published order</option>
+                          <option value="tokens">Most tokens</option>
+                          <option value="cost">Highest estimated cost</option>
+                        </select>
+                      </label>
+                      {sortedGroups.map((group) => (
                         <UsageGroup
                           key={group.id}
                           group={group}
-                          expanded={expanded.has(group.id)}
+                          expanded={expanded?.has(group.id) || false}
                           onToggle={() => setExpanded((current) => {
-                            const next = new Set(current);
+                            const next = new Set(current || []);
                             if (next.has(group.id)) next.delete(group.id); else next.add(group.id);
                             return next;
                           })}

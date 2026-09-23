@@ -2,6 +2,12 @@
 
 This file records additions maintained by this fork. Parent release history remains in `CHANGELOG.md` unchanged.
 
+## 2026-09-23
+
+- Added viewer sorting by total tokens and estimated cost for published groups and keys, plus Tokens/Cost/Requests trend modes and visible mobile totals.
+- Show provider credit balances as available currency instead of misleading percentage quotas; clarify quota refresh caching.
+- Keep group expansion consistent across configuration changes and aggregate long-period last-used timestamps in SQLite rather than transferring every matching history row.
+
 ## 2026-09-12
 
 - Merged upstream 0.5.75 snapshot `17c4cc76`, preserving managed deployment and Viewer Portal hooks.
