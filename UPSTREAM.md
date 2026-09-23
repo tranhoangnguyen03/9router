@@ -4,13 +4,13 @@
 
 - Parent repository: [`decolua/9router`](https://github.com/decolua/9router)
 - Parent branch: `master`
-- Parent commit: `17c4cc76877bd1755030a8414f8d0083f48dcccf`
-- Parent release: `v0.5.75` plus the two subsequent upstream commits (MiMo dual auth and Claude context controls)
-- Verified: 2026-09-12
+- Parent commit: `39e36d3d0c849e0e01dfeacddf111edf892448fc`
+- Parent release: `v0.5.86`
+- Verified: 2026-09-23
 
-The snapshot includes current upstream/master so it satisfies the managed updater's ancestry check. The merge preserves the Viewer Portal and managed deployment extensions. Find the local integration commit with `git log --merges --oneline`.
+The merge preserves the Viewer Portal and managed deployment extensions. The Dockerfile conflict was resolved in favor of the fork's pinned base, lockfile-based build, and non-root runtime; upstream's root entrypoint and unlocked `npm install` were not adopted. Find the local integration commit with `git log --merges --oneline`.
 
-Upgrade checks: 87 focused portal/managed/auth/stream/quota tests passed, 23 Python operations tests and shell contracts passed, and an isolated production build passed. No production deployment was performed.
+Upgrade checks: 24 Python operations tests and `git diff --check` passed; the managed update runs focused container tests and a production image build before candidate promotion.
 
 ## Integration Budget
 
