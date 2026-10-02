@@ -1,0 +1,383 @@
+import importlib.util
+import json
+import sqlite3
+import os
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import Mock, patch
+
+ROOT = Path(__file__).resolve().parents[2]
+SPEC = importlib.util.spec_from_file_location("nine_router_ctl", ROOT / "ops/9routerctl.py")
+CTL = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(CTL)
+
+
+class OpsTests(unittest.TestCase):
+    def test_quiesced_backup_copies_checkpointed_database_for_fast_cutover(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source, target = Path(tmp) / "source.sqlite", Path(tmp) / "backup/data.sqlite"
+            db = sqlite3.connect(source)
+            db.execute("pragma journal_mode=wal")
+            db.execute("create table state(value text)")
+            db.execute("insert into state values('kept')")
+            db.commit(); db.close()
+            manifest = CTL.backup_quiesced(source, target)
+            self.assertEqual(manifest["quickCheck"], "pending")
+            copy = sqlite3.connect(target)
+            self.assertEqual(copy.execute("select value from state").fetchone()[0], "kept")
+            copy.close()
+
+    def test_online_backup_is_complete_and_verified(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "source.sqlite"
+            target = Path(tmp) / "backup.sqlite"
+            db = sqlite3.connect(source)
+            db.executescript("""
+                create table _meta(key text primary key, value text not null);
+                create table usageHistory(id integer primary key, value text);
+                insert into _meta values('schemaVersion', '1');
+                insert into usageHistory values(1, 'kept');
+            """)
+            db.commit()
+            db.close()
+
+            manifest = CTL.backup_database(source, target)
+
+            copy = sqlite3.connect(f"file:{target}?mode=ro", uri=True)
+            self.assertEqual(copy.execute("pragma quick_check").fetchone()[0], "ok")
+            self.assertEqual(copy.execute("select value from usageHistory").fetchone()[0], "kept")
+            copy.close()
+            self.assertEqual(manifest["schemaVersion"], "1")
+            self.assertEqual(len(manifest["sha256"]), 64)
+
+    def test_candidate_sanitization_disables_background_side_effects(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            database = Path(tmp) / "data.sqlite"
+            db = sqlite3.connect(database)
+            db.executescript("""
+                create table settings(id integer primary key, data text not null);
+                insert into settings values(1, '{"tunnelEnabled":true,"mitmEnabled":true}');
+            """)
+            db.commit()
+            db.close()
+
+            CTL.sanitize_candidate(database)
+
+            db = sqlite3.connect(database)
+            settings = json.loads(db.execute("select data from settings where id=1").fetchone()[0])
+            db.close()
+            for key in ("cloudEnabled", "tunnelEnabled", "tailscaleEnabled", "mitmEnabled"):
+                self.assertFalse(settings[key])
+
+    def test_quota_only_portal_is_validated_and_legacy_responses_still_work(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            database = Path(tmp) / "data.sqlite"
+            db = sqlite3.connect(database)
+            db.executescript("create table apiKeys(id text); create table settings(id integer primary key, data text);")
+            portal = {"enabled": True, "passwordHash": "hash", "quotaAccounts": [{"connectionId": "one", "label": "Shared"}]}
+            db.execute("insert into settings values(1, ?)", (json.dumps({"forkExtensions": {"viewerPortal": portal}}),))
+            db.commit(); db.close()
+            expected = CTL.expected_public_portal(database)
+            self.assertTrue(expected["quotaAvailable"])
+            self.assertFalse(expected["usageAvailable"])
+            for legacy in (False, True):
+                body = dict(expected)
+                if legacy:
+                    body.pop("quotaAvailable")
+                response = Mock(status=200)
+                response.__enter__ = Mock(return_value=response)
+                response.__exit__ = Mock(return_value=False)
+                with patch.object(CTL.urllib.request, "urlopen", return_value=response), patch.object(CTL.json, "load", return_value=body):
+                    CTL.wait_portal("http://localhost/portal", database, timeout=1)
+
+    def test_container_contract_is_hardened(self):
+        args = CTL.container_security_args()
+        joined = " ".join(args)
+        for required in (
+            "--read-only", "--cap-drop ALL", "--security-opt no-new-privileges",
+            "--restart always", "--log-opt max-size=20m", "--log-opt max-file=5",
+        ):
+            self.assertIn(required, joined)
+
+    def test_candidate_proxy_uses_non_masquerading_publish_network(self):
+        calls = []
+        with tempfile.TemporaryDirectory() as tmp, \
+             patch.object(CTL, "stop_candidate"), \
+             patch.object(CTL, "chown_tree"), \
+             patch.object(CTL, "run", side_effect=lambda args, **kwargs: calls.append(args)), \
+             patch.object(CTL, "wait_http"), \
+             patch.object(CTL, "wait_portal"), \
+             patch.object(CTL, "wait_models"):
+            CTL.start_candidate("image", Path(tmp))
+        proxy_create = next(call for call in calls if call[:2] == ["docker", "create"])
+        self.assertIn(CTL.CANDIDATE_PROXY_NETWORK, proxy_create)
+        self.assertNotIn("none", proxy_create)
+        self.assertTrue(any(call[:3] == ["docker", "network", "connect"] for call in calls))
+        proxy_network = next(call for call in calls if call[:3] == ["docker", "network", "create"] and CTL.CANDIDATE_PROXY_NETWORK in call)
+        self.assertIn("com.docker.network.bridge.enable_ip_masquerade=false", proxy_network)
+
+    def test_live_permissions_precreate_viewer_session_secret_without_exposing_ops(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old_data = CTL.LIVE_DATA
+            CTL.LIVE_DATA = Path(tmp)
+            (Path(tmp) / "ops").mkdir()
+            watchdog = Path(tmp) / "ops/watchdog.sh"
+            watchdog.write_text("root-owned")
+            os.chmod(watchdog, 0o755)
+            try:
+                CTL.prepare_live_permissions()
+                secret = Path(tmp) / "fork-viewer-portal-jwt-secret"
+                self.assertTrue(secret.exists())
+                self.assertEqual(secret.stat().st_mode & 0o777, 0o600)
+                self.assertEqual(watchdog.stat().st_uid, 0)
+                self.assertEqual(Path(tmp).stat().st_uid, 0)
+            finally:
+                CTL.LIVE_DATA = old_data
+
+    def test_restore_keeps_failed_database_and_atomically_installs_verified_backup(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old_data, old_backups = CTL.LIVE_DATA, CTL.BACKUPS
+            CTL.LIVE_DATA, CTL.BACKUPS = Path(tmp) / "live", Path(tmp) / "backups"
+            db_dir = CTL.LIVE_DATA / "db"
+            db_dir.mkdir(parents=True)
+            live = db_dir / "data.sqlite"
+            backup = Path(tmp) / "good.sqlite"
+            for path, value in ((live, "new"), (backup, "old")):
+                db = sqlite3.connect(path)
+                db.execute("create table state(value text)")
+                db.execute("insert into state values(?)", (value,))
+                db.commit(); db.close()
+            try:
+                CTL.restore_database(backup)
+                db = sqlite3.connect(live)
+                self.assertEqual(db.execute("select value from state").fetchone()[0], "old")
+                db.close()
+                failed = list(CTL.BACKUPS.glob("failed-*/data.sqlite"))
+                self.assertEqual(len(failed), 1)
+                db = sqlite3.connect(failed[0])
+                self.assertEqual(db.execute("select value from state").fetchone()[0], "new")
+                db.close()
+            finally:
+                CTL.LIVE_DATA, CTL.BACKUPS = old_data, old_backups
+
+    def test_stop_legacy_waits_for_timer_service_app_and_open_database(self):
+        calls = []
+        with patch.object(CTL, "systemctl", side_effect=lambda *args, **kwargs: calls.append(args)), \
+             patch.object(CTL, "is_active", return_value=True), \
+             patch.object(CTL, "wait_port_free") as port_free, \
+             patch.object(CTL, "wait_database_closed") as database_closed:
+            CTL.stop_legacy()
+        self.assertIn(("stop", "9router-watchdog.timer", "9router-watchdog.service"), calls)
+        self.assertIn(("stop", "9router.service"), calls)
+        port_free.assert_called_once_with(20128)
+        database_closed.assert_called_once()
+
+    def test_promotion_requires_explicit_portal_transfer_approval(self):
+        args = CTL.parser().parse_args(["promote", "--confirm-cutover", "--apply-candidate-portal-config"])
+        self.assertTrue(args.apply_candidate_portal_config)
+
+    def test_preflight_is_a_separate_non_cutover_command(self):
+        args = CTL.parser().parse_args(["preflight"])
+        self.assertEqual(args.command, "preflight")
+
+    def test_preflight_artifact_identity_detects_changes_without_rehashing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            artifact = Path(tmp) / "candidate.sqlite"
+            artifact.write_bytes(b"frozen")
+            identity = CTL.artifact_identity(artifact)
+            self.assertTrue(CTL.artifact_unchanged(artifact, identity))
+            artifact.write_bytes(b"changed")
+            self.assertFalse(CTL.artifact_unchanged(artifact, identity))
+
+    def test_portal_transfer_requires_approval_and_valid_api_key_references(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source, target = Path(tmp) / "candidate.sqlite", Path(tmp) / "live.sqlite"
+            portal = {"enabled": True, "groups": [{"id": "g", "name": "Group", "apiKeyIds": ["key-1"]}]}
+            for path, settings in (
+                (source, {"forkExtensions": {"viewerPortal": portal}}),
+                (target, {"unrelated": "preserved"}),
+            ):
+                db = sqlite3.connect(path)
+                db.execute("create table settings(id integer primary key, data text not null)")
+                db.execute("create table apiKeys(id text primary key)")
+                db.execute("insert into apiKeys values('key-1')")
+                db.execute("insert into settings values(1, ?)", (json.dumps(settings),))
+                db.commit(); db.close()
+
+            with self.assertRaisesRegex(RuntimeError, "--apply-candidate-portal-config"):
+                CTL.apply_portal_config(source, target, approved=False)
+            result = CTL.apply_portal_config(source, target, approved=True)
+            self.assertNotEqual(result["before"], result["after"])
+            db = sqlite3.connect(target)
+            stored = json.loads(db.execute("select data from settings where id=1").fetchone()[0])
+            db.close()
+            self.assertEqual(stored["unrelated"], "preserved")
+            self.assertEqual(stored["forkExtensions"]["viewerPortal"], portal)
+
+    def test_portal_transfer_rejects_missing_api_key_reference(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source, target = Path(tmp) / "candidate.sqlite", Path(tmp) / "live.sqlite"
+            for path, portal in ((source, {"groups": [{"apiKeyIds": ["missing"]}]}), (target, None)):
+                db = sqlite3.connect(path)
+                db.execute("create table settings(id integer primary key, data text not null)")
+                db.execute("create table apiKeys(id text primary key)")
+                settings = {"forkExtensions": {"viewerPortal": portal}} if portal else {}
+                db.execute("insert into settings values(1, ?)", (json.dumps(settings),))
+                db.commit(); db.close()
+            with self.assertRaisesRegex(RuntimeError, "unknown API key"):
+                CTL.apply_portal_config(source, target, approved=True)
+
+    def test_release_state_is_one_atomic_source_of_truth(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old_releases = CTL.RELEASES
+            CTL.RELEASES = Path(tmp)
+            try:
+                CTL.write_release_state({"kind": "image", "imageId": "new"}, {"kind": "systemd"})
+                current, previous = CTL.release_state()
+                self.assertEqual(current["imageId"], "new")
+                self.assertEqual(previous["kind"], "systemd")
+                self.assertTrue((Path(tmp) / "state.json").exists())
+                self.assertFalse((Path(tmp) / "current.json").exists())
+                self.assertFalse((Path(tmp) / "previous.json").exists())
+            finally:
+                CTL.RELEASES = old_releases
+
+    def test_release_schema_reads_live_metadata_before_snapshot_metadata(self):
+        self.assertEqual(CTL.release_schema({
+            "schemaVersion": "old", "database": {"schemaVersion": "candidate"},
+            "liveDatabase": {"schemaVersion": "live"},
+        }), "live")
+
+    def test_failed_promotion_stops_writer_restores_backup_then_restarts_previous(self):
+        calls = []
+        with tempfile.TemporaryDirectory() as tmp, \
+             patch.object(CTL, "stop_all_writers", side_effect=lambda: calls.append("stop")), \
+             patch.object(CTL, "disable_autostart"), \
+             patch.object(CTL, "restore_database", side_effect=lambda path: calls.append(("restore", path))), \
+             patch.object(CTL, "start_release", side_effect=lambda release: calls.append(("start", release))):
+            backup = Path(tmp)
+            (backup / "data.sqlite").touch()
+            previous = {"kind": "systemd"}
+            CTL.recover_release(previous, backup)
+        self.assertEqual(calls, ["stop", ("restore", backup), ("start", previous)])
+
+    def test_candidate_finalization_freezes_wal_aware_database_and_removes_mutable_copy(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            data = Path(tmp) / "candidate" / "data"
+            data.joinpath("db").mkdir(parents=True)
+            database = data / "db/data.sqlite"
+            db = sqlite3.connect(database)
+            db.execute("pragma journal_mode=wal")
+            db.execute("create table state(value text)")
+            db.execute("insert into state values('tested')")
+            db.commit(); db.close()
+            candidate = {"data": str(data), "imageId": "sha256:image", "healthPassedAt": "now"}
+            with patch.object(CTL, "docker_exists", return_value=False), \
+                 patch.object(CTL, "remove_container"), \
+                 patch.object(CTL, "wait_database_closed"):
+                metadata = Path(tmp) / "candidate.json"
+                frozen = CTL.finalize_candidate(candidate, metadata_path=metadata)
+            artifact = Path(frozen["finalizedDatabase"])
+            self.assertEqual(json.loads(metadata.read_text())["finalizedDatabase"], str(artifact))
+            self.assertTrue(artifact.exists())
+            self.assertFalse(data.exists())
+            self.assertEqual(CTL.inspect_database(artifact)["sha256"], frozen["database"]["sha256"])
+            db = sqlite3.connect(artifact)
+            self.assertEqual(db.execute("select value from state").fetchone()[0], "tested")
+            db.close()
+
+    def test_database_close_check_fails_closed_when_lsof_errors(self):
+        completed = type("Result", (), {"returncode": 2, "stdout": "", "stderr": "failure"})()
+        with patch.object(CTL, "run", return_value=completed):
+            with self.assertRaisesRegex(RuntimeError, "lsof failed"):
+                CTL.wait_database_closed(timeout=0.01)
+
+    def test_committed_promotion_cleanup_failure_never_rolls_back(self):
+        current, previous = {"kind": "image", "imageId": "new"}, {"kind": "systemd"}
+        with patch.object(CTL, "write_release_state") as write_state, \
+             patch.object(CTL, "complete_promotion_cleanup", side_effect=OSError("fsync failed")), \
+             patch.object(CTL, "reconcile_release") as reconcile:
+            warning = CTL.finish_promotion_commit(current, previous, Path("candidate.json"))
+        write_state.assert_called_once_with(current, previous)
+        reconcile.assert_called_once_with(current)
+        self.assertIn("fsync failed", warning)
+
+    def test_post_commit_exception_never_restores_legacy(self):
+        legacy_recovery = Mock()
+        reconcile = Mock(side_effect=RuntimeError("managed reconcile failed"))
+        candidate = {"imageId": "sha256:new"}
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryFile() as lock:
+            releases = Path(tmp) / "releases"
+            releases.mkdir()
+            (releases / "candidate.json").write_text("{}")
+            old_releases, old_backups, old_operation = CTL.RELEASES, CTL.BACKUPS, CTL.OPERATION_FILE
+            CTL.RELEASES, CTL.BACKUPS = releases, Path(tmp) / "backups"
+            CTL.OPERATION_FILE = releases / "operation.json"
+            try:
+                with patch.multiple(
+                    CTL,
+                    require_root=lambda: None, locked=lambda: lock, recover_operation=lambda: None,
+                    progress=lambda message: None, read_json=lambda path: candidate,
+                    validated_preflight=lambda candidate, approved: ({}, Path(tmp) / "candidate.sqlite"),
+                    release_state=lambda: (None, None), write_operation=lambda operation: None,
+                    stop_all_writers=lambda: None, disable_autostart=lambda: None,
+                    backup_quiesced=lambda source, target: {"schemaVersion": "1"},
+                    write_json=lambda path, value: None,
+                    apply_portal_config=lambda source, target, approved: {},
+                    prepare_live_permissions=lambda: None, run_production=lambda image: None,
+                    wait_http=lambda url: None, wait_portal=lambda url, db: None,
+                    wait_models=lambda url, db: None, verify_backup=lambda path, manifest: manifest,
+                    disable_legacy_autostart=lambda: None, enable_watchdog=lambda unit: None,
+                    database_summary=lambda path: {"schemaVersion": "1"},
+                    finish_promotion_commit=Mock(side_effect=OSError("journal fsync failed")),
+                    write_release_state=Mock(), reconcile_release=reconcile,
+                    recover_release=legacy_recovery,
+                ):
+                    with self.assertRaisesRegex(RuntimeError, "refusing legacy rollback"):
+                        CTL.promote(True, True)
+            finally:
+                CTL.RELEASES, CTL.BACKUPS, CTL.OPERATION_FILE = old_releases, old_backups, old_operation
+        legacy_recovery.assert_not_called()
+
+    def test_promotion_cleanup_keeps_journal_until_fallible_filesystem_cleanup_finishes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old_preflight = CTL.PREFLIGHT_FILE
+            CTL.PREFLIGHT_FILE = Path(tmp) / "preflight.json"
+            candidate = Path(tmp) / "candidate.json"
+            CTL.PREFLIGHT_FILE.touch(); candidate.touch()
+            try:
+                with patch.object(CTL, "clear_operation", side_effect=lambda: self.assertFalse(CTL.PREFLIGHT_FILE.exists())) as clear:
+                    CTL.complete_promotion_cleanup(candidate)
+                clear.assert_called_once()
+                self.assertFalse(candidate.exists())
+            finally:
+                CTL.PREFLIGHT_FILE = old_preflight
+
+    def test_committed_operation_journal_finishes_state_before_cleanup(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old_releases, old_operation = CTL.RELEASES, CTL.OPERATION_FILE
+            CTL.RELEASES = Path(tmp)
+            CTL.OPERATION_FILE = Path(tmp) / "operation.json"
+            current, previous = {"kind": "image", "imageId": "new"}, {"kind": "systemd"}
+            CTL.write_operation({
+                "type": "promote", "phase": "committed",
+                "nextCurrent": current, "nextPrevious": previous,
+            })
+            try:
+                with patch.object(CTL, "reconcile_release") as reconcile:
+                    CTL.recover_operation()
+                self.assertEqual(CTL.release_state(), (current, previous))
+                reconcile.assert_called_once_with(current)
+                self.assertFalse(CTL.OPERATION_FILE.exists())
+            finally:
+                CTL.RELEASES, CTL.OPERATION_FILE = old_releases, old_operation
+
+    def test_recovery_unit_is_installed_with_control_plane(self):
+        unit = ROOT / "ops/systemd/9router-managed-recovery.service"
+        self.assertTrue(unit.exists())
+        self.assertIn("9routerctl recover", unit.read_text())
+
+
+if __name__ == "__main__":
+    unittest.main()

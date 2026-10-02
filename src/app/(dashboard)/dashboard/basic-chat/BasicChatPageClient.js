@@ -170,11 +170,29 @@ export default function BasicChatPageClient() {
   const [providerGroups, setProviderGroups] = useState([]);
   const [loadingData, setLoadingData] = useState(true);
   const [loadError, setLoadError] = useState("");
-  const [sessions, setSessions] = useState([]);
-  const [activeSessionId, setActiveSessionId] = useState("");
-  const [activeProviderId, setActiveProviderId] = useState("");
+  const [sessions, setSessions] = useState(() => {
+    if (typeof window === "undefined") return [];
+    try {
+      const saved = safeParse(globalThis.localStorage.getItem(STORAGE_KEYS.sessions), []);
+      return Array.isArray(saved) ? saved.map((session) => ({
+        ...session,
+        messages: Array.isArray(session.messages) ? session.messages : [],
+      })) : [];
+    } catch { return []; }
+  });
+  const [activeSessionId, setActiveSessionId] = useState(() => {
+    if (typeof window === "undefined") return "";
+    return globalThis.localStorage.getItem(STORAGE_KEYS.activeSessionId) || "";
+  });
+  const [activeProviderId, setActiveProviderId] = useState(() => {
+    if (typeof window === "undefined") return "";
+    return globalThis.localStorage.getItem(STORAGE_KEYS.activeProviderId) || "";
+  });
   const [activeModelId, setActiveModelId] = useState("");
-  const [draft, setDraft] = useState("");
+  const [draft, setDraft] = useState(() => {
+    if (typeof window === "undefined") return "";
+    return globalThis.localStorage.getItem(STORAGE_KEYS.draft) || "";
+  });
   const [attachments, setAttachments] = useState([]);
   const [isSending, setIsSending] = useState(false);
   const [streamingMessageId, setStreamingMessageId] = useState("");
@@ -189,20 +207,7 @@ export default function BasicChatPageClient() {
   const historyMenuRef = useRef(null);
 
   useEffect(() => {
-    try {
-      const savedSessions = safeParse(globalThis.localStorage.getItem(STORAGE_KEYS.sessions), []);
-      setSessions(Array.isArray(savedSessions) ? savedSessions.map((session) => ({
-        ...session,
-        messages: Array.isArray(session.messages) ? session.messages : [],
-      })) : []);
-      setActiveSessionId(globalThis.localStorage.getItem(STORAGE_KEYS.activeSessionId) || "");
-      setActiveProviderId(globalThis.localStorage.getItem(STORAGE_KEYS.activeProviderId) || "");
-      setDraft(globalThis.localStorage.getItem(STORAGE_KEYS.draft) || "");
-    } catch {
-      // Ignore storage errors.
-    } finally {
-      setIsHydrated(true);
-    }
+    setIsHydrated(true);
   }, []);
 
   useEffect(() => {
@@ -886,7 +891,7 @@ export default function BasicChatPageClient() {
                         <div className="mb-3 grid grid-cols-2 gap-2 sm:grid-cols-3 mt-2">
                           {message.attachments.map((attachment) => (
                             <a key={attachment.id} href={attachment.dataUrl} target="_blank" rel="noreferrer" className="overflow-hidden rounded-[18px] border border-white/10 bg-black/20">
-                              <img src={attachment.dataUrl} alt={attachment.name} className="h-28 w-full object-cover" />
+                              <img src={attachment.dataUrl} alt={attachment.name} className="h-28 w-full object-cover" loading="lazy" decoding="async" />
                             </a>
                           ))}
                         </div>
