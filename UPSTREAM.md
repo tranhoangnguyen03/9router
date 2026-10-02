@@ -4,13 +4,15 @@
 
 - Parent repository: [`decolua/9router`](https://github.com/decolua/9router)
 - Parent branch: `master`
-- Parent commit: `39e36d3d0c849e0e01dfeacddf111edf892448fc`
-- Parent release: `v0.5.86`
-- Verified: 2026-09-23
+- Parent commit: `a99cf57239ff778b61e434c2786009d5ed1c412c`
+- Parent release: `v0.5.95`
+- Verified: 2026-10-02
 
 The merge preserves the Viewer Portal and managed deployment extensions. The Dockerfile conflict was resolved in favor of the fork's pinned base, lockfile-based build, and non-root runtime; upstream's root entrypoint and unlocked `npm install` were not adopted. Find the local integration commit with `git log --merges --oneline`.
 
-Upgrade checks: 24 Python operations tests and `git diff --check` passed; the managed update runs focused container tests and a production image build before candidate promotion.
+Upgrade checks: 24 Python operations tests, 88 focused managed/portal/usage tests, and `git diff --check` passed. The broad non-real suite passed 3032 tests with 85 failures; 84 assertion failures also reproduce on pristine upstream v0.5.95, and the remaining failure is an accidentally included live MiMo test (excluded from the offline comparison). The committed historical no-regression gate is stale for this upstream version. The managed update additionally runs focused container tests and a production image build before candidate promotion.
+
+The v0.5.95 usage-repository conflict preserves full API-key composite aggregation (upstream's collision fix), fork cost breakdowns, and safe API-key IDs. Fork usage changes also span `open-sse` usage tracking/pricing, `src/lib/db/repos/usageRepo.js`, and usage dashboard components; review these alongside the portal integration files.
 
 ## Integration Budget
 
