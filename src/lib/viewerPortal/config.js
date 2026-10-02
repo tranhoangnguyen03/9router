@@ -12,6 +12,7 @@ export const DEFAULT_VIEWER_PORTAL = Object.freeze({
   draftBoard: { title: "", body: "", updatedAt: null },
   publishedBoard: null,
   groups: [],
+  quotaAccounts: [],
   updatedAt: null,
 });
 
@@ -57,6 +58,11 @@ export function normalizePortalConfig(value) {
     draftBoard: normalizeBoard(source.draftBoard, false),
     publishedBoard: normalizeBoard(source.publishedBoard, true),
     groups,
+    quotaAccounts: (Array.isArray(source.quotaAccounts) ? source.quotaAccounts : [])
+      .filter((account, index, accounts) => typeof account?.connectionId === "string" && account.connectionId.length > 0 && account.connectionId.length <= 100
+        && accounts.findIndex((other) => other?.connectionId === account.connectionId) === index)
+      .slice(0, 100)
+      .map((account) => ({ connectionId: account.connectionId, label: text(account.label, 80) })),
     updatedAt: typeof source.updatedAt === "string" ? source.updatedAt : null,
   };
 }
@@ -82,6 +88,19 @@ export function validateAndNormalizeGroups(value, validApiKeyIds) {
       apiKeyIds.push(apiKeyId);
     }
     return { id, name, apiKeyIds };
+  });
+}
+
+export function validateAndNormalizeQuotaAccounts(value, validConnectionIds) {
+  if (!Array.isArray(value) || value.length > 100) throw new Error("Select at most 100 quota accounts");
+  const selected = new Set();
+  return value.map((account) => {
+    const id = account?.connectionId;
+    if (typeof id !== "string" || id.length > 100 || !validConnectionIds.has(id)) throw new Error("Select an existing quota-supported account");
+    if (selected.has(id)) throw new Error("Quota accounts must be unique");
+    if (account.label != null && (typeof account.label !== "string" || account.label.length > 80)) throw new Error("Public labels must be at most 80 characters");
+    selected.add(id);
+    return { connectionId: id, label: text(account.label, 80) };
   });
 }
 
@@ -137,5 +156,6 @@ export function toPublicPortalConfig(config) {
     subtitle: portal.subtitle,
     board: portal.enabled ? portal.publishedBoard : null,
     usageAvailable: portal.enabled && Boolean(portal.passwordHash) && portal.groups.some((group) => group.apiKeyIds.length > 0),
+    quotaAvailable: portal.enabled && Boolean(portal.passwordHash) && portal.quotaAccounts.length > 0,
   };
 }

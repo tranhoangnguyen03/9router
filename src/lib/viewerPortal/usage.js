@@ -76,13 +76,13 @@ function placeholders(count) {
   return Array.from({ length: count }, () => "?").join(",");
 }
 
-function loadSelectedHistory(db, columns, cutoff, rawKeys) {
+function loadSelectedHistory(db, columns, cutoff, rawKeys, latestOnly = false) {
   const rows = [];
   for (let index = 0; index < rawKeys.length; index += 800) {
     const chunk = rawKeys.slice(index, index + 800);
     rows.push(...db.all(
       `SELECT ${columns} FROM usageHistory
-       WHERE timestamp >= ? AND apiKey IN (${placeholders(chunk.length)})`,
+       WHERE timestamp >= ? AND apiKey IN (${placeholders(chunk.length)})${latestOnly ? " GROUP BY apiKey" : ""}`,
       [cutoff, ...chunk],
     ));
   }
@@ -171,7 +171,7 @@ async function computePortalUsage(period, portal, allKeys) {
         }
       }
 
-      const historyRows = loadSelectedHistory(db, "timestamp, apiKey", cutoffDate.toISOString(), selectedRawKeys);
+      const historyRows = loadSelectedHistory(db, "apiKey, MAX(timestamp) AS timestamp", cutoffDate.toISOString(), selectedRawKeys, true);
       for (const row of historyRows) {
         const metric = perKey.get(rawToId.get(row.apiKey));
         if (metric && (!metric.lastUsed || row.timestamp > metric.lastUsed)) metric.lastUsed = row.timestamp;

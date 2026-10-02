@@ -70,6 +70,27 @@ class OpsTests(unittest.TestCase):
             for key in ("cloudEnabled", "tunnelEnabled", "tailscaleEnabled", "mitmEnabled"):
                 self.assertFalse(settings[key])
 
+    def test_quota_only_portal_is_validated_and_legacy_responses_still_work(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            database = Path(tmp) / "data.sqlite"
+            db = sqlite3.connect(database)
+            db.executescript("create table apiKeys(id text); create table settings(id integer primary key, data text);")
+            portal = {"enabled": True, "passwordHash": "hash", "quotaAccounts": [{"connectionId": "one", "label": "Shared"}]}
+            db.execute("insert into settings values(1, ?)", (json.dumps({"forkExtensions": {"viewerPortal": portal}}),))
+            db.commit(); db.close()
+            expected = CTL.expected_public_portal(database)
+            self.assertTrue(expected["quotaAvailable"])
+            self.assertFalse(expected["usageAvailable"])
+            for legacy in (False, True):
+                body = dict(expected)
+                if legacy:
+                    body.pop("quotaAvailable")
+                response = Mock(status=200)
+                response.__enter__ = Mock(return_value=response)
+                response.__exit__ = Mock(return_value=False)
+                with patch.object(CTL.urllib.request, "urlopen", return_value=response), patch.object(CTL.json, "load", return_value=body):
+                    CTL.wait_portal("http://localhost/portal", database, timeout=1)
+
     def test_container_contract_is_hardened(self):
         args = CTL.container_security_args()
         joined = " ".join(args)

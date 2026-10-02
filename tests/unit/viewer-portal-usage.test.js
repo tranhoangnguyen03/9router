@@ -58,6 +58,20 @@ describe("viewer portal published-key aggregation", () => {
     expect(serialized).not.toContain("Private");
   });
 
+  it("reads only the latest history timestamp per published key for long periods", async () => {
+    mocks.all.mockImplementation((sql) => {
+      if (sql.includes("usageDaily")) return [];
+      if (sql.includes("GROUP BY apiKey")) return [{ apiKey: "sk-published-secret", timestamp: "2026-08-22T11:30:00.000Z" }];
+      return [];
+    });
+
+    const result = await getPortalUsage("60d");
+    expect(result.groups[0].keys[0].lastUsed).toBe("2026-08-22T11:30:00.000Z");
+    const [sql] = mocks.all.mock.calls.find(([query]) => query.includes("usageHistory"));
+    expect(sql).toContain("MAX(timestamp) AS timestamp");
+    expect(sql).toContain("GROUP BY apiKey");
+  });
+
   it("changes the cache fingerprint when selected key metadata changes", async () => {
     mocks.all.mockReturnValue([]);
     await getPortalUsage("24h");

@@ -196,7 +196,10 @@ export function canonicalizeUsage(usage) {
     prompt = prompt + cached + cacheCreation;
   } else {
     // OpenAI/Gemini/Responses path (or already-canonical input): prompt already
-    // includes cached_tokens.
+    // includes cached_tokens. Mirror the cacheCreation fallback above:
+    // buildUsage() only emits the nested prompt_tokens_details.cached_tokens
+    // shape, and Responses API reports input_tokens_details.cached_tokens, so
+    // without these fallbacks the cache-read count is silently dropped.
     cached = num(usage.cached_tokens ?? nestedCached);
   }
 
