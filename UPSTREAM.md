@@ -4,13 +4,15 @@
 
 - Parent repository: [`decolua/9router`](https://github.com/decolua/9router)
 - Parent branch: `master`
-- Parent commit: `a99cf57239ff778b61e434c2786009d5ed1c412c`
-- Parent release: `v0.5.95`
-- Verified: 2026-10-02
+- Parent commit: `ce4460ef` (resolved upstream `master`)
+- Parent release: `v0.5.99`
+- Verified: 2026-10-08
 
 The merge preserves the Viewer Portal and managed deployment extensions. The Dockerfile conflict was resolved in favor of the fork's pinned base, lockfile-based build, and non-root runtime; upstream's root entrypoint and unlocked `npm install` were not adopted. Find the local integration commit with `git log --merges --oneline`.
 
-Upgrade checks: 24 Python operations tests, 88 focused managed/portal/usage tests, and `git diff --check` passed. The broad non-real suite passed 3032 tests with 85 failures; 84 assertion failures also reproduce on pristine upstream v0.5.95, and the remaining failure is an accidentally included live MiMo test (excluded from the offline comparison). The committed historical no-regression gate is stale for this upstream version. The managed update additionally runs focused container tests and a production image build before candidate promotion.
+Upgrade checks: 24 Python operations tests, 98 focused managed/portal/usage/Responses tests, and `git diff --check` passed. The broad offline suite passed 3414 tests with 87 assertion failures; 85 also fail on pristine upstream v0.5.99 (3335 passed, 101 failed). The remaining two tests passed on focused recheck in both checkouts (21 tests total). Collection failures include missing cloud/lowdb dependencies and node:test files without Vitest suites. Live-provider tests were excluded. The committed historical no-regression gate is stale for this upstream version. The managed update additionally runs focused container tests and a production image build before candidate promotion.
+
+This integration incorporates the already-deployed v0.5.95 fork history before updating to v0.5.99. The four Responses completion/abort fixes discussed during the disconnect investigation were already present in production v0.5.95; this update does not establish or fix the cause of that disconnect. No custom logging or timeout changes were added.
 
 The v0.5.95 usage-repository conflict preserves full API-key composite aggregation (upstream's collision fix), fork cost breakdowns, and safe API-key IDs. Fork usage changes also span `open-sse` usage tracking/pricing, `src/lib/db/repos/usageRepo.js`, and usage dashboard components; review these alongside the portal integration files.
 
