@@ -147,6 +147,53 @@ export async function refreshKimiToken(refreshToken, credentials, log) {
   return refreshAccessToken("kimi", refreshToken, credentials, log);
 }
 
+export async function refreshClineToken(refreshToken, log) {
+  if (!refreshToken) return null;
+
+  return dedupRefresh("cline", refreshToken, async () => {
+    try {
+      const response = await fetch(PROVIDERS.cline?.refreshUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json",
+        },
+        body: JSON.stringify({
+          refreshToken,
+          grantType: "refresh_token",
+          clientType: "extension",
+        }),
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        log?.error?.("TOKEN_REFRESH", "Failed to refresh Cline token", {
+          status: response.status,
+          error: errorText,
+        });
+        return null;
+      }
+
+      const body = await response.json();
+      const tokens = body?.data || body;
+      if (!tokens?.accessToken) return null;
+
+      const expiresIn = tokens.expiresAt
+        ? Math.max(1, Math.floor((new Date(tokens.expiresAt).getTime() - Date.now()) / 1000))
+        : (tokens.expiresIn || tokens.expires_in || 3600);
+
+      return {
+        accessToken: tokens.accessToken,
+        refreshToken: tokens.refreshToken || refreshToken,
+        expiresIn,
+      };
+    } catch (error) {
+      log?.error?.("TOKEN_REFRESH", `Error refreshing Cline token: ${error.message}`);
+      return null;
+    }
+  }, log);
+}
+
 // Claude OAuth: JSON body, client_id only. Delegate to refreshAccessToken("claude", ...).
 export async function refreshClaudeOAuthToken(refreshToken, log) {
   return refreshAccessToken("claude", refreshToken, {}, log);
@@ -657,4 +704,65 @@ export async function refreshWindsurfToken(credentials, log) {
     "windsurf: apiKey is long-lived (no refresh_token flow) — skipping"
   );
   return null;
+}
+
+// ── MiniMax Code (mcode) ─────────────────────────────────────────────────────
+// MiniMax refresh tokens are SINGLE-USE: sending the same one twice answers
+// invalid_grant (HTTP 400) and signs the account out. Two paths reach refresh
+// (background scheduler + executor's on-401 retry) and may hold different
+// snapshots of one connection, so dedupRefresh keys on the spent token value —
+// a token already sent resolves to the cached result instead of a second send.
+// An invalid_grant is the ONLY answer that means the sign-in is gone; anything
+// else (5xx, timeout) returns null and the current access token stays usable.
+const MINIMAX_CODE_SITES = {
+  "minimax-code": "https://account.minimax.cn/oauth2/token",
+  "minimax-code-global": "https://account.minimax.io/oauth2/token",
+};
+
+export async function refreshMiniMaxCodeToken(provider, refreshToken, log) {
+  const tokenUrl = MINIMAX_CODE_SITES[provider];
+  if (!tokenUrl || !refreshToken) return null;
+  return dedupRefresh(provider, refreshToken, async () => {
+    try {
+      const response = await fetch(tokenUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+          Accept: "application/json",
+        },
+        body: new URLSearchParams({
+          grant_type: "refresh_token",
+          refresh_token: refreshToken,
+          client_id: "mcode-public",
+          scope: "agent.default",
+          audience: "agent-backend",
+        }).toString(),
+        signal: AbortSignal.timeout(30000),
+      });
+      const data = await response.json().catch(() => null);
+      if (!response.ok || (data && typeof data.error === "string" && data.error)) {
+        const code = data?.error || `HTTP ${response.status}`;
+        if (response.status === 400 && data?.error === "invalid_grant") {
+          log?.warn?.("TOKEN_REFRESH", `MiniMax refresh token spent/rejected (${provider}) — sign-in gone`);
+          return { error: "invalid_grant" };
+        }
+        log?.error?.("TOKEN_REFRESH", `MiniMax token refresh failed (${provider})`, { status: response.status, error: code });
+        return null;
+      }
+      if (!data?.access_token) {
+        log?.error?.("TOKEN_REFRESH", `MiniMax refresh returned no access_token (${provider})`);
+        return null;
+      }
+      return {
+        accessToken: data.access_token,
+        // MiniMax rotates the refresh token on every refresh; keep the old one
+        // only if the answer oddly omits it.
+        refreshToken: data.refresh_token || refreshToken,
+        expiresIn: data.expires_in,
+      };
+    } catch (error) {
+      log?.error?.("TOKEN_REFRESH", `Error refreshing MiniMax token (${provider}): ${error.message}`);
+      return null;
+    }
+  }, log);
 }
