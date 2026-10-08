@@ -51,12 +51,13 @@ describe("viewer portal guard boundaries", () => {
     "/api/viewer-portal/session",
     "/api/viewer-portal/session/status",
     "/api/viewer-portal/usage",
+    "/api/viewer-portal/usage/quota",
   ])("allows the viewer route to perform its own access checks: %s", async (pathname) => {
     expect(await proxy(request(pathname))).toBe(mocks.nextResponse);
   });
 
-  it("keeps fork portal administration behind dashboard authentication", async () => {
-    const response = await proxy(request("/api/viewer-portal/admin"));
+  it.each(["/api/viewer-portal/admin", "/api/viewer-portal/admin/quota"])("keeps fork portal administration behind dashboard authentication: %s", async (pathname) => {
+    const response = await proxy(request(pathname));
     expect(response.status).toBe(401);
   });
 });

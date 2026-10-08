@@ -4,7 +4,7 @@ This repository tracks [`decolua/9router`](https://github.com/decolua/9router) a
 
 ## Viewer Portal
 
-The fork adds a viewer-facing portal for public announcements and password-protected, aggregate API-key usage.
+The fork adds a viewer-facing portal for public announcements and password-protected aggregate API-key usage and global provider quotas.
 
 - Viewer page: `/portal`
 - Administration: `/dashboard/viewer-portal`
@@ -13,7 +13,7 @@ The fork adds a viewer-facing portal for public announcements and password-prote
 
 The portal publishes only explicitly selected API keys. It never exposes raw API keys, request payloads, request-level records, connection IDs, or the viewer password hash.
 
-See [the Viewer Portal guide](docs/fork/viewer-portal/README.md) for setup and behavior, and [its architecture note](docs/fork/viewer-portal/architecture.md) for implementation boundaries.
+See [the Viewer Portal guide](gitbook/content/en/fork/viewer-portal.md) for setup, quota selection, freshness limits and fork implementation boundaries. Usage and Quota share the same viewer password; quota publication is independent of usage groups.
 
 ## Compatibility Policy
 

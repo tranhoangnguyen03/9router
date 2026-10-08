@@ -49,6 +49,9 @@ VIEWER_TESTS = [
     "unit/viewer-portal-settings-boundary.test.js",
     "unit/viewer-portal-usage-route.test.js",
     "unit/viewer-portal-usage.test.js",
+    "unit/viewer-portal-quota.test.js",
+    "unit/viewer-portal-quota-route.test.js",
+    "unit/viewer-portal-quota-upstream.test.js",
 ]
 
 
@@ -440,6 +443,11 @@ def expected_public_portal(database: Path) -> dict:
         "subtitle": (portal.get("subtitle") or "").strip(),
         "board": portal.get("publishedBoard") if enabled else None,
         "usageAvailable": enabled and bool(portal.get("passwordHash")) and has_valid_group,
+        "quotaAvailable": enabled and bool(portal.get("passwordHash")) and any(
+            isinstance(account, dict) and isinstance(account.get("connectionId"), str)
+            and 0 < len(account["connectionId"]) <= 100
+            for account in (portal.get("quotaAccounts") if isinstance(portal.get("quotaAccounts"), list) else [])
+        ),
     }
 
 
@@ -449,7 +457,11 @@ def wait_portal(url: str, database: Path, *, timeout: int = 30) -> None:
     while time.monotonic() < deadline:
         try:
             with urllib.request.urlopen(url, timeout=5) as response:
-                if response.status == 200 and json.load(response) == expected:
+                actual = json.load(response)
+                # Pre-quota releases omit this flag; rollback must still validate
+                # their original public contract without requiring the new UI.
+                comparable = expected if "quotaAvailable" in actual else {key: value for key, value in expected.items() if key != "quotaAvailable"}
+                if response.status == 200 and actual == comparable:
                     return
         except Exception:
             pass
