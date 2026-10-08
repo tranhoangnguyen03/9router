@@ -18,6 +18,8 @@ COPY package.json package-lock.json ./
 RUN --mount=type=cache,target=/root/.npm npm ci
 COPY . ./
 ENV NEXT_TELEMETRY_DISABLED=1
+# Bound build heap on the small production host; never apply this to the runner.
+ARG NODE_OPTIONS="--max-old-space-size=1024"
 RUN npm run build
 
 FROM ${NODE_IMAGE} AS runner
