@@ -43,6 +43,13 @@ TEST_IMAGE = "9router-managed-tests"
 VIEWER_TESTS = [
     "unit/managed-deployment.test.js",
     "unit/managed-image-contract.test.js",
+    "unit/security-audit.test.js",
+    "unit/dashboard-guard.test.js",
+    "unit/apikey-attribution.test.js",
+    "unit/usage-api-key-attribution.test.js",
+    "unit/cached-token-e2e.test.js",
+    "unit/db-concurrent.test.js",
+    "unit/codex-stt-ui.test.js",
     "unit/viewer-portal-cache.test.js",
     "unit/viewer-portal-config.test.js",
     "unit/viewer-portal-guard.test.js",

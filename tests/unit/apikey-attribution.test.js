@@ -75,6 +75,32 @@ describe("api key x model attribution across periods", () => {
     expect(local.find((r) => r.rawModel === "gpt-4o").promptTokens).toBe(200);
   });
 
+  it("combines legacy token fallbacks with cost breakdowns and safe key attribution", async () => {
+    const rows = [
+      { tokens: { input_tokens: 100, output_tokens: 20 } },
+      { tokens: { prompt_tokens: 50, completion_tokens: 10 } },
+    ];
+    for (const row of rows) {
+      await usageRepo.saveRequestUsage(Object.assign(row, {
+        provider: "openai", model: "gpt-4o", apiKey: ` ${keyA} `,
+      }));
+    }
+    const { getAdapter } = await import("../../src/lib/db/driver.js");
+    const adapter = await getAdapter();
+    adapter.run("UPDATE usageHistory SET tokens = '{}' WHERE apiKey = ? AND promptTokens = ?", [` ${keyA} `, 50]);
+
+    for (const period of ["24h", "7d"]) {
+      const stats = await usageRepo.getUsageStats(period);
+      const row = Object.values(stats.byApiKey).find((r) => r.keyName === "KeyA" && r.rawModel === "gpt-4o");
+      expect(row).toMatchObject({ requests: 2, promptTokens: 150, completionTokens: 30 });
+      expect(row.apiKeyId).toBeTruthy();
+      for (const field of ["cost", "inputCost", "cachedCost", "outputCost"]) {
+        expect(row[field]).toBeCloseTo(rows.reduce((sum, r) => sum + r[field], 0), 12);
+      }
+      expect(JSON.stringify(stats.byApiKey)).not.toContain(keyA);
+    }
+  });
+
   it("agrees between today and 7d on per-key cost totals", async () => {
     const today = await usageRepo.getUsageStats("today");
     const d7 = await usageRepo.getUsageStats("7d");

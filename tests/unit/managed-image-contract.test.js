@@ -20,10 +20,14 @@ describe("managed image contract", () => {
   });
 
   it("pins and identifies the image build", () => {
-    expect(dockerfile).toMatch(/ARG NODE_IMAGE=node:22-alpine@sha256:[a-f0-9]{64}/);
+    expect(dockerfile).toMatch(/ARG NODE_IMAGE=node:22\.23\.4-alpine@sha256:[a-f0-9]{64}/);
     expect(dockerfile).toContain("ARG VCS_REF=unknown");
     expect(dockerfile).toContain("org.opencontainers.image.revision=$VCS_REF");
     expect(dockerfile).not.toMatch(/apk .*upgrade/);
+  });
+
+  it("includes the audio conversion runtime", () => {
+    expect(dockerfile).toContain("RUN apk add --no-cache ffmpeg");
   });
 
   it("runs non-root without recursively taking ownership of mounted data", () => {

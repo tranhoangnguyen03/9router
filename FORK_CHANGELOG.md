@@ -2,6 +2,14 @@
 
 This file records additions maintained by this fork. Parent release history remains in `CHANGELOG.md` unchanged.
 
+## 2026-10-26
+
+- Integrated upstream v0.5.111 (`3a978a63`), preserving the Viewer Portal, managed deployment, safe API-key usage attribution, and stored cost breakdowns.
+- Updated the digest-pinned non-root runtime to Node 22.23.4 and included ffmpeg for upstream audio conversion support; retained deterministic npm installs and bounded build heap.
+- Refreshed the dependency lockfile, including patched source-map-js 1.2.2. The remaining node-forge signature-verification advisory has no published fix; the app's only direct use is certificate generation, not signature verification.
+- Restored upstream's transactional duplicate-usage-write protection, which an earlier fork merge had dropped, without losing stored cost breakdowns; added usage/concurrency and dashboard security checks to the managed deployment gate.
+- Added regression checks combining legacy token-count fallbacks with cost breakdowns and safe key attribution; adapted the upstream audio runtime check to preserve the non-root image contract.
+
 ## 2026-09-23
 
 - Added viewer sorting by total tokens and estimated cost for published groups and keys, plus Tokens/Cost/Requests trend modes and visible mobile totals.

@@ -4,17 +4,19 @@
 
 - Parent repository: [`decolua/9router`](https://github.com/decolua/9router)
 - Parent branch: `master`
-- Parent commit: `ce4460ef` (resolved upstream `master`)
-- Parent release: `v0.5.99`
-- Verified: 2026-10-08
+- Parent commit: `3a978a63` (pinned upstream `master`)
+- Parent release: `v0.5.111`
+- Verified: 2026-10-26
 
-The merge preserves the Viewer Portal and managed deployment extensions. The Dockerfile conflict was resolved in favor of the fork's pinned base, lockfile-based build, and non-root runtime; upstream's root entrypoint and unlocked `npm install` were not adopted. Find the local integration commit with `git log --merges --oneline`.
+The merge preserves the Viewer Portal and managed deployment extensions. The Dockerfile keeps digest-pinned Node 22.23.4, deterministic installs, and the non-root runtime while adding upstream's ffmpeg requirement; upstream's root entrypoint was not adopted. Find the integration commit with `git log --merges --oneline`.
 
-Upgrade checks: 24 Python operations tests, 98 focused managed/portal/usage/Responses tests, and `git diff --check` passed. The broad offline suite passed 3414 tests with 87 assertion failures; 85 also fail on pristine upstream v0.5.99 (3335 passed, 101 failed). The remaining two tests passed on focused recheck in both checkouts (21 tests total). Collection failures include missing cloud/lowdb dependencies and node:test files without Vitest suites. Live-provider tests were excluded. The committed historical no-regression gate is stale for this upstream version. The managed update additionally runs focused container tests and a production image build before candidate promotion.
+Upgrade checks: 24 Python operations tests, 177 focused managed/portal/usage/Responses/fallback tests, 103 targeted rechecks, touched-file ESLint, and `git diff --check` passed. The final broad run passed 4172 tests with 43 assertion failures versus 4077 passed and 46 failed on pristine v0.5.111; there were no new assertion or collection failures. Both runs also had 15 expected failures and 24 skips. Network access was disabled, real-provider directories were excluded, and live-only tests were not validated. Known environmental failures include missing cloud/lowdb dependencies, ffmpeg absent from the minimal comparison image, and read-only snapshot writes. The two xAI discovery failures were intermittent, not fixed by this integration. The managed update additionally gates promotion on native container tests, a production image build, and snapshot-backed candidate checks.
 
-This integration incorporates the already-deployed v0.5.95 fork history before updating to v0.5.99. The four Responses completion/abort fixes discussed during the disconnect investigation were already present in production v0.5.95; this update does not establish or fix the cause of that disconnect. No custom logging or timeout changes were added. The managed Docker builder accepts `NODE_OPTIONS` (default `--max-old-space-size=1024`) to bound build heap on the 4 GB host; the runner does not inherit this build-only limit.
+The actual provider/model/OAuth exports exactly match pristine upstream. Historical provider and alias snapshots miss SenseNova and Runcrate in both checkouts; OAuth URL verification passes. No custom logging or timeout changes were added. The Docker builder retains `NODE_OPTIONS=--max-old-space-size=1024` on the 4 GB host; the runner does not inherit this build-only limit.
 
-The v0.5.95 usage-repository conflict preserves full API-key composite aggregation (upstream's collision fix), fork cost breakdowns, and safe API-key IDs. Fork usage changes also span `open-sse` usage tracking/pricing, `src/lib/db/repos/usageRepo.js`, and usage dashboard components; review these alongside the portal integration files.
+The refreshed lockfile resolves Next 16.4.3, undici 7.30.1, and patched source-map-js 1.2.2. Production dependency audit still reports the node-forge RSA signature-verification advisory with no published fix. The only direct app use is certificate generation in `src/mitm/cert/rootCA.js`, not the affected signature-verification operation.
+
+The usage merge combines upstream's trimmed key lookup and legacy token fallbacks with full API-key composite aggregation, fork cost breakdowns, and safe API-key IDs. Upstream's transactional duplicate-write protection, dropped by an earlier fork merge, is restored and its concurrency test passes. Fork usage changes also span `open-sse` usage tracking/pricing and dashboard components; review these alongside the portal integration files.
 
 ## Integration Budget
 
