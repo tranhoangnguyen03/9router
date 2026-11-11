@@ -2,9 +2,15 @@ const http = require("http");
 const path = require("path");
 const fs = require("fs");
 const crypto = require("crypto");
+const { isIP } = require("net");
 const { pathToFileURL } = require("url");
 
 const origCreate = http.createServer.bind(http);
+
+const TRUSTED_PROXY_IP = process.env.NINEROUTER_TRUSTED_PROXY_IP || "";
+if (TRUSTED_PROXY_IP && !isIP(TRUSTED_PROXY_IP)) {
+  throw new Error("NINEROUTER_TRUSTED_PROXY_IP must be one exact IP address");
+}
 
 // Per-process secret proving x-9r-real-ip was stamped below rather than sent by the client.
 // A bare `next start` / `next dev` never loads this file, so it cannot produce a matching
@@ -59,10 +65,13 @@ http.createServer = (...args) => {
     const xRealIp = req.headers["x-real-ip"];
     const viaProxy = !!(xff || xRealIp);
     const isLoopbackProxy = socketIp === "127.0.0.1" || socketIp === "::1" || socketIp === "::ffff:127.0.0.1";
-    // Trust forwarding headers only when the TCP peer is a local reverse proxy.
-    // Direct/public sockets remain keyed by the unspoofable peer address.
-    const proxyIp = xRealIp || (xff ? String(xff).split(",")[0].trim() : "");
-    const ip = isLoopbackProxy && proxyIp ? proxyIp : socketIp;
+    const isConfiguredProxy = TRUSTED_PROXY_IP &&
+      (socketIp === TRUSTED_PROXY_IP || socketIp === `::ffff:${TRUSTED_PROXY_IP}`);
+    // The explicitly trusted single proxy must append/overwrite XFF; ignore client X-Real-IP.
+    const proxyIp = isConfiguredProxy
+      ? (xff ? String(xff).split(",").at(-1).trim() : "")
+      : xRealIp || (xff ? String(xff).split(",")[0].trim() : "");
+    const ip = (isLoopbackProxy || isConfiguredProxy) && isIP(proxyIp) ? proxyIp : socketIp;
     delete req.headers["x-9r-real-ip"];
     delete req.headers["x-forwarded-for"];
     delete req.headers["x-9r-via-proxy"];

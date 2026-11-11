@@ -100,6 +100,22 @@ class OpsTests(unittest.TestCase):
         ):
             self.assertIn(required, joined)
 
+    def test_production_trusts_only_bridge_gateway_and_publishes_on_loopback(self):
+        with patch.object(CTL, "run", return_value=Mock(stdout="172.17.0.1\n")) as run, \
+             patch.object(CTL, "remove_container"):
+            CTL.run_production("image")
+        args = run.call_args_list[-1].args[0]
+        self.assertIn("127.0.0.1:20128:20128", args)
+        self.assertIn("NINEROUTER_TRUSTED_PROXY_IP=172.17.0.1", args)
+        self.assertNotIn("TRUST_PROXY=true", args)
+
+    def test_invalid_bridge_gateway_does_not_remove_production(self):
+        with patch.object(CTL, "run", return_value=Mock(stdout="invalid")), \
+             patch.object(CTL, "remove_container") as remove:
+            with self.assertRaises(ValueError):
+                CTL.run_production("image")
+            remove.assert_not_called()
+
     def test_candidate_proxy_uses_non_masquerading_publish_network(self):
         calls = []
         with tempfile.TemporaryDirectory() as tmp, \

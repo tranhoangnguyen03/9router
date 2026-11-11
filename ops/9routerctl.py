@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import fcntl
 import hashlib
+import ipaddress
 import json
 import os
 import secrets
@@ -659,6 +660,12 @@ def run_tests() -> None:
             "--user", "1000:1000", TEST_IMAGE,
             "npm", "test", "--prefix", "tests", "--", "--run", *VIEWER_TESTS,
         ])
+        run([
+            "docker", "run", "--rm", "--network", "none", "--read-only",
+            "--user", "1000:1000", TEST_IMAGE,
+            "node", "--test", "tests/unit/custom-server-trusted-proxy.test.cjs",
+            "tests/unit/custom-server-h2c.test.cjs",
+        ])
     finally:
         run(["docker", "image", "rm", TEST_IMAGE], check=False, capture=True)
 
@@ -753,6 +760,9 @@ def prepare_live_permissions() -> None:
 
 
 def run_production(image: str) -> None:
+    # Caddy reaches the loopback-published port through Docker's bridge gateway.
+    gateway = run(["docker", "network", "inspect", "bridge", "--format", "{{(index .IPAM.Config 0).Gateway}}"], capture=True).stdout.strip()
+    ipaddress.ip_address(gateway)  # Fail before touching production on invalid network config.
     remove_container(PROD_CONTAINER)
     run([
         "docker", "run", "-d", "--name", PROD_CONTAINER,
@@ -766,6 +776,7 @@ def run_production(image: str) -> None:
         "-e", "HOSTNAME=0.0.0.0",
         "-e", "NODE_ENV=production",
         "-e", "NINEROUTER_MANAGED_DEPLOYMENT=true",
+        "-e", f"NINEROUTER_TRUSTED_PROXY_IP={gateway}",
         "-e", "BASE_URL=https://ai-router.davidustranus.space",
         "-e", "NEXT_PUBLIC_BASE_URL=https://ai-router.davidustranus.space",
         image,

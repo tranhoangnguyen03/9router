@@ -1,3 +1,8 @@
+# Unreleased
+
+## Fixes
+- **Dashboard auth**: support an explicitly trusted single reverse-proxy IP so managed Caddy-to-Docker traffic uses separate visitor login-limit counters, while retaining peer-header sanitization and ignoring client-supplied IP overrides.
+
 # v0.5.111 (2026-10-26)
 
 ## Features

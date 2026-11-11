@@ -2,6 +2,12 @@
 
 Public traffic remains on `https://ai-router.davidustranus.space`; Caddy always proxies to `127.0.0.1:20128`. Only one process may use the live database.
 
+## Dashboard login client IPs
+
+The production controller sets `NINEROUTER_TRUSTED_PROXY_IP` to the Docker bridge gateway. The custom server accepts the last proxy-appended `X-Forwarded-For` address only from that exact peer, so Caddy visitors have separate login-limit counters. Client-supplied `X-Real-IP` is ignored on this path. The backend must stay published only on `127.0.0.1`; do not expose it publicly or broaden trust to private subnets. This assumes a single Caddy hop with its default XFF handling. Other proxy topologies need separate review.
+
+Check with `node --test tests/unit/custom-server-trusted-proxy.test.cjs tests/unit/custom-server-h2c.test.cjs` and `python3 -m unittest discover -s ops/tests` before deploying. Login protection remains enabled; a password reset alone does not clear existing in-memory lockouts.
+
 ## One-time controller bootstrap
 
 Before the first managed update, install the controller directly from the reviewed checkout (do not use the older installed copy):
