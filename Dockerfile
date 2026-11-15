@@ -48,6 +48,10 @@ COPY --from=builder /app/node_modules/next ./node_modules/next
 COPY --from=builder /app/node_modules/sql.js ./node_modules/sql.js
 # node-machine-id is createRequire-loaded at runtime; tracing omits it.
 COPY --from=builder /app/node_modules/node-machine-id ./node_modules/node-machine-id
+# Lazy runtime packages escape tracing; reuse the lockfile-installed copies.
+COPY --from=builder /app/node_modules/wreq-js ./node_modules/wreq-js
+COPY --from=builder /app/node_modules/@wreq-js ./node_modules/@wreq-js
+COPY --from=builder /app/node_modules/playwright-core ./node_modules/playwright-core
 
 RUN mkdir -p /app/data && chown node:node /app/data
 

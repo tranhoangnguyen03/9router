@@ -26,6 +26,12 @@ describe("managed image contract", () => {
     expect(dockerfile).not.toMatch(/apk .*upgrade/);
   });
 
+  it("ships lockfile-installed lazy runtime packages and native bindings", () => {
+    for (const name of ["wreq-js", "@wreq-js", "playwright-core"]) {
+      expect(dockerfile).toContain(`COPY --from=builder /app/node_modules/${name} ./node_modules/${name}`);
+    }
+  });
+
   it("includes the audio conversion runtime", () => {
     expect(dockerfile).toContain("RUN apk add --no-cache ffmpeg");
   });
