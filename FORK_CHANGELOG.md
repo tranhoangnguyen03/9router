@@ -6,6 +6,7 @@ This file records additions maintained by this fork. Parent release history rema
 
 - Integrated upstream v0.5.119 (`1855aa44`), preserving the Viewer Portal, managed deployment, usage attribution/cost fixes, and trusted-proxy login isolation.
 - Bundled upstream's lazy runtime packages and native bindings from the existing deterministic install, preserving the non-root/read-only runtime.
+- Protected upstream's new CommandCode host-credential import with the existing local-only and always-authenticated guards; added disabled-login, remote-access and CLI-token regressions.
 - Updated undici to 7.30.2 and node-forge to 1.4.3; production dependency audit is clean.
 - Retained upstream's root application version 0.5.116; its CLI/changelog identify release v0.5.119. Managed image revisions disambiguate the deployed source.
 
