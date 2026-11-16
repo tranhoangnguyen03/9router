@@ -29,9 +29,16 @@ jobs:
           node-version: "22"
       - name: Install app dependencies
         run: npm install --no-audit --no-fund
+      - name: Install test runner in isolated directory
+        run: |
+          mkdir -p /tmp/9router-vitest
+          cd /tmp/9router-vitest
+          printf '{"name":"9router-vitest","private":true,"type":"module","version":"1.0.0"}' > package.json
+          npm install --no-audit --no-fund vitest@^4.0.0
+          ln -s /tmp/9router-vitest/node_modules/vitest "$GITHUB_WORKSPACE/node_modules/vitest"
       - name: SDK adapter offline tests
-        run: ./node_modules/.bin/vitest run tests/unit/claude-sdk.test.js tests/unit/claude-sdk-tools.test.js --reporter=verbose
+        run: /tmp/9router-vitest/node_modules/.bin/vitest run tests/unit/claude-sdk.test.js tests/unit/claude-sdk-tools.test.js --reporter=verbose
       - name: Existing Claude request translator tests
-        run: ./node_modules/.bin/vitest run tests/unit/openai-to-claude.test.js --reporter=verbose
+        run: /tmp/9router-vitest/node_modules/.bin/vitest run tests/unit/openai-to-claude.test.js --reporter=verbose
       - name: Build Next.js standalone server
         run: npm run build

@@ -64,15 +64,15 @@ describe("Claude Agent SDK adapter", () => {
     expect(input.prompt).toContain("Latest user message:\nFollow-up");
   });
 
-  it("rejects tools rather than letting Claude Code execute client-side actions", async () => {
+  it("rejects malformed tools before reaching the SDK or executing any client action", async () => {
     const invoked = vi.fn(() => { throw new Error("must not be invoked"); });
     const executor = new ClaudeSdkExecutor(invoked);
     const result = await executor.execute(req({ body: {
       messages: [{ role: "user", content: "Use the tool" }],
-      tools: [{ name: "delete_files", input_schema: { type: "object" } }]
+      tools: [{ name: "delete_files", input_schema: { type: "array", items: {} } }]
     } }));
     expect(result.response.status).toBe(422);
-    expect((await result.response.json()).error.message).toContain("tool");
+    expect((await result.response.json()).error.message).toContain("input_schema");
     expect(invoked).not.toHaveBeenCalled();
   });
 

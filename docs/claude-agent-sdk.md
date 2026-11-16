@@ -35,7 +35,8 @@ Run the offline test suite from the project's test setup:
 
 ```sh
 npm install
-npx vitest run tests/unit/claude-sdk.test.js tests/unit/claude-sdk-tools.test.js
+# Install Vitest in a clean test-only directory, or use your existing Vitest runner.
+npx --yes vitest@4 run tests/unit/claude-sdk.test.js tests/unit/claude-sdk-tools.test.js
 ```
 
 Then run local live checks: check login, one text JSON turn, one SSE turn, real client tool calls and results (sequential and parallel), repeated turns, restart in a pending tool call, client abort, missing CLI, expired login, conflicting environment variables, and account usage/billing category. Confirm no upstream API key or OAuth token is sent by 9Router. Verify no client tool runs in the 9Router process.
