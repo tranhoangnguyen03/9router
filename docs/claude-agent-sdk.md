@@ -9,7 +9,7 @@ This fork **replaces** the old `cc/...` Claude provider's direct HTTP/OAuth rout
 3. Open **Providers → Claude Code (local SDK)** to inspect login status. The SDK uses its bundled official CLI by default. To force a known installed binary, set `CLAUDE_CODE_EXECUTABLE` to the full path of that executable before starting 9Router.
 4. Use existing `cc/<model-id>` IDs. The `claude` provider is now local and has no 9Router OAuth account/connection rows. Legacy OAuth rows in an existing database are ignored (not silently deleted); remove them separately if desired.
 
-This provider does not read, store, or refresh Claude Code OAuth credentials. It does not forge headers, alter upstream requests, copy session tokens, or silently fall back to paid API keys. It fails if `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL`, or cloud-provider selector variables are set. Authentication and billing are owned by Claude Code / Anthropic. Included subscription quota is **not guaranteed**: verify account usage and Anthropic's current rules for this specific setup before use.
+This provider does not read, store, or refresh Claude Code OAuth credentials. It does not forge headers, alter upstream requests, copy session tokens, or silently fall back to paid API keys. Claude Code cloud MCP servers, auto-memory, auto-compaction, and project context files are disabled on SDK child processes. It fails if `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL`, or cloud-provider selector variables are set. Authentication and billing are owned by Claude Code / Anthropic. Included subscription quota is **not guaranteed**: verify account usage and Anthropic's current rules for this specific setup before use.
 
 ## Compatibility and current limits
 

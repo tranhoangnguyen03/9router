@@ -59,6 +59,8 @@ describe("Claude Agent SDK external tool boundary", () => {
     expect(getActiveSdkToolSessionCount()).toBe(1);
     expect(f.requests).toHaveLength(1);
     expect(f.requests[0].options.tools).toEqual([]);
+    expect(f.requests[0].options.env.ENABLE_CLAUDEAI_MCP_SERVERS).toBe("0");
+    expect(f.requests[0].options.settings.autoMemoryEnabled).toBe(false);
     expect(f.requests[0].options.allowedTools).toEqual(["mcp__router__t0"]);
 
     // Here the client executes calculate. 9Router never executes it.

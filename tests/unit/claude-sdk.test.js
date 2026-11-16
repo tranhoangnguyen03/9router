@@ -102,6 +102,9 @@ describe("Claude Agent SDK adapter", () => {
     expect(captured).toHaveLength(1);
     expect(captured[0].options.tools).toEqual([]);
     expect(captured[0].options.mcpServers).toEqual({});
+    expect(captured[0].options.env.ENABLE_CLAUDEAI_MCP_SERVERS).toBe("0");
+    expect(captured[0].options.settings.autoMemoryEnabled).toBe(false);
+    expect(captured[0].options.settings.claudeMdExcludes).toContain("**/CLAUDE.md");
     expect(captured[0].options.maxTurns).toBe(1);
     expect(captured[0].options.pathToClaudeCodeExecutable).toBe(process.env.CLAUDE_CODE_EXECUTABLE || undefined);
   });

@@ -1,5 +1,7 @@
 // SDK <-> HTTP tool boundary. The external client, not the router, runs tools.
 // In-memory by design: after a router restart we reject orphan tool results.
+import { sdkRuntimeOptions } from "./claude-sdk-runtime.js";
+
 const SERVER_NAME = "router";
 const TOOL_ID_META = "claudecode/toolUseId";
 const MAX_SESSIONS = 12;
@@ -245,6 +247,7 @@ class ToolSession {
           mcpServers: this.mcp.mcpServers,
           strictMcpConfig: true,
           settingSources: [],
+          ...sdkRuntimeOptions(),
           skills: [],
           permissionMode: "dontAsk",
           maxTurns: 100,

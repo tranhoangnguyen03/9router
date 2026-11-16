@@ -1,4 +1,5 @@
 import { BaseExecutor } from "./base.js";
+import { sdkRuntimeOptions } from "./claude-sdk-runtime.js";
 import { executeSdkToolRequest, hasSdkToolBoundary } from "./claude-sdk-tools.js";
 
 const SDK_URL = "claude-agent-sdk://local";
@@ -196,6 +197,7 @@ export class ClaudeSdkExecutor extends BaseExecutor {
           model,
           systemPrompt: input.systemPrompt,
           settingSources: [],
+          ...sdkRuntimeOptions(),
           tools: [],
           allowedTools: [],
           permissionMode: "dontAsk",
