@@ -34,7 +34,7 @@ jobs:
           mkdir -p /tmp/9router-vitest
           cd /tmp/9router-vitest
           printf '{"name":"9router-vitest","private":true,"type":"module","version":"1.0.0"}' > package.json
-          npm install --no-audit --no-fund vitest@^4.0.0
+          yarn add --non-interactive --no-lockfile --dev vitest@^4.0.0
           ln -s /tmp/9router-vitest/node_modules/vitest "$GITHUB_WORKSPACE/node_modules/vitest"
       - name: SDK adapter offline tests
         run: /tmp/9router-vitest/node_modules/.bin/vitest run tests/unit/claude-sdk.test.js tests/unit/claude-sdk-tools.test.js --reporter=verbose
