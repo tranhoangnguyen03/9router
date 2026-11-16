@@ -29,8 +29,6 @@ jobs:
           node-version: "22"
       - name: Install app dependencies
         run: npm install --no-audit --no-fund
-      - name: Install test runner
-        run: npm install --no-save --no-audit --no-fund vitest@^4.0.0
       - name: SDK adapter offline tests
         run: ./node_modules/.bin/vitest run tests/unit/claude-sdk.test.js tests/unit/claude-sdk-tools.test.js --reporter=verbose
       - name: Existing Claude request translator tests
