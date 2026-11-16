@@ -36,6 +36,8 @@ COPY --from=builder /app/src/mitm ./src/mitm
 COPY --from=builder /app/node_modules/node-forge ./node_modules/node-forge
 # The Agent SDK starts a native Claude Code binary; retain its optional platform package.
 COPY --from=builder /app/node_modules/@anthropic-ai ./node_modules/@anthropic-ai
+COPY --from=builder /app/node_modules/@modelcontextprotocol ./node_modules/@modelcontextprotocol
+COPY --from=builder /app/node_modules/zod ./node_modules/zod
 
 RUN mkdir -p /app/data && chown -R node:node /app && \
   mkdir -p /app/data-home && chown node:node /app/data-home && \

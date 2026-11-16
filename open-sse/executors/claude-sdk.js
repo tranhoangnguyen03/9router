@@ -1,4 +1,5 @@
 import { BaseExecutor } from "./base.js";
+import { executeSdkToolRequest, hasSdkToolBoundary } from "./claude-sdk-tools.js";
 
 const SDK_URL = "claude-agent-sdk://local";
 const MAX_CONTEXT_CHARS = 2_000_000;
@@ -158,10 +159,11 @@ function sdkError(message) {
 // Dependency injection is intentional: tests exercise the complete response
 // adapter without an Anthropic login or network requests.
 export class ClaudeSdkExecutor extends BaseExecutor {
-  constructor(queryFactory = null) {
+  constructor(queryFactory = null, mcpFactory = null) {
     super("claude", { baseUrl: SDK_URL, noAuth: true });
     this.noAuth = true;
     this.queryFactory = queryFactory;
+    this.mcpFactory = mcpFactory;
   }
 
   async execute({ model, body, stream, signal, log }) {
@@ -169,6 +171,14 @@ export class ClaudeSdkExecutor extends BaseExecutor {
     let input;
     try {
       guardEnvironment(process.env);
+      if (hasSdkToolBoundary(body)) {
+        return await executeSdkToolRequest({
+          model, body, stream, signal, log, descriptor,
+          queryFactory: this.queryFactory,
+          mcpFactory: this.mcpFactory,
+          utils: { errorResponse, sse, accumulateSdkEvent, finalMessage, makeState, eventsFromCompletedAssistant }
+        });
+      }
       input = buildSdkInput(body);
     } catch (e) {
       return { ...descriptor, response: errorResponse(e) };

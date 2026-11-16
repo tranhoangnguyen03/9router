@@ -230,8 +230,10 @@ class ToolSession {
   async setup(stream) {
     this.current = new Turn(this.model, stream, () => this.cancel("client disconnected"), this.utils);
     this.bindSignal(this.signal);
+    if (this.disposed) return this.current.response(this.descriptor);
     try {
       this.mcp = await (this.mcpFactory || defaultMcpFactory)(this.toolDefs, (id, name) => this.onToolCall(id, name));
+      if (this.disposed) return this.current.response(this.descriptor);
       const factory = this.queryFactory || (await import("@anthropic-ai/claude-agent-sdk")).query;
       this.query = factory({
         prompt: this.prompt.prompt,
@@ -288,16 +290,15 @@ class ToolSession {
     const turn = this.current;
     turn.push(event);
     if (event.type === "message_stop") {
+      clearTimeout(this.startTimer);
       if (turn.stopReason === "tool_use") {
         if (!this.ids.size) throw fault("SDK requested tool use without tool_use blocks", 502);
         this.waiting = true;
         this.bindSignal(null); // A finished tool-use turn must not be aborted by its old HTTP request.
         this.waitTimer = setTimeout(() => this.cancel("Client tool results timed out"), WAIT_MS);
         this.current = null;
-        this.rawStreamSeen = false;
       } else {
         this.current = null;
-        this.rawStreamSeen = false;
       }
     }
   }
@@ -343,6 +344,7 @@ class ToolSession {
     const results = lastResultBlocks(body);
     const submitted = new Map();
     const evidence = priorToolIds(body);
+    if (body.messages.at(-1).content.some((block) => block.type !== "tool_result")) throw fault("Tool-resume turn must contain only tool results", 409);
     for (const block of results) {
       if (typeof block.tool_use_id !== "string" || submitted.has(block.tool_use_id)) throw fault("Missing or duplicate tool_result ID", 409);
       if (!this.ids.has(block.tool_use_id) || !evidence.has(block.tool_use_id)) throw fault("tool_result does not match the outstanding SDK tool_use", 409);
@@ -354,6 +356,7 @@ class ToolSession {
     this.ids.forEach((id) => byToolId.delete(id));
     this.ids.clear();
     this.current = new Turn(this.model, stream, () => this.cancel("client disconnected"), this.utils);
+    this.rawStreamSeen = false;
     this.bindSignal(signal);
     for (const [id, value] of submitted) {
       const waiter = this.waiters.get(id);

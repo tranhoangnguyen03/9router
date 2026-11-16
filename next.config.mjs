@@ -1,7 +1,7 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   output: "standalone",
-  serverExternalPackages: ["better-sqlite3", "sql.js", "node:sqlite", "bun:sqlite", "@anthropic-ai/claude-agent-sdk"],
+  serverExternalPackages: ["better-sqlite3", "sql.js", "node:sqlite", "bun:sqlite", "@anthropic-ai/claude-agent-sdk", "@modelcontextprotocol/sdk"],
   images: {
     unoptimized: true
   },
