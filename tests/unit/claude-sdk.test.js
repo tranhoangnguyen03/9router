@@ -103,7 +103,7 @@ describe("Claude Agent SDK adapter", () => {
     expect(captured[0].options.tools).toEqual([]);
     expect(captured[0].options.mcpServers).toEqual({});
     expect(captured[0].options.maxTurns).toBe(1);
-    expect(captured[0].options.pathToClaudeCodeExecutable).toBe(process.env.CLAUDE_CODE_EXECUTABLE || "claude");
+    expect(captured[0].options.pathToClaudeCodeExecutable).toBe(process.env.CLAUDE_CODE_EXECUTABLE || undefined);
   });
 
   it("preserves event order on SSE streams", async () => {

@@ -80,7 +80,7 @@ function errorResponse(error) {
   const status = error?.status || 502;
   return new Response(JSON.stringify({
     type: "error",
-    error: { type: status === 422 ? "invalid_request_error" : "api_error", message: error?.message || String(error) }
+    error: { type: status < 500 ? "invalid_request_error" : "api_error", message: error?.message || String(error) }
   }), { status, headers: { "content-type": "application/json" } });
 }
 
@@ -196,7 +196,7 @@ export class ClaudeSdkExecutor extends BaseExecutor {
           skills: [],
           persistSession: false,
           verbatimPrompts: true,
-          pathToClaudeCodeExecutable: process.env.CLAUDE_CODE_EXECUTABLE || "claude",
+          ...(process.env.CLAUDE_CODE_EXECUTABLE ? { pathToClaudeCodeExecutable: process.env.CLAUDE_CODE_EXECUTABLE } : {}),
           abortController,
           ...(input.effort ? { effort: input.effort } : {})
         }

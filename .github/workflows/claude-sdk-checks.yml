@@ -1,0 +1,38 @@
+name: Claude Agent SDK adapter
+
+on:
+  pull_request:
+    paths:
+      - "open-sse/executors/**"
+      - "open-sse/translator/**"
+      - "src/shared/constants/providers.js"
+      - "src/sse/services/auth.js"
+      - "src/app/api/v1/models/route.js"
+      - "src/app/api/cli-tools/claude-sdk/**"
+      - "src/shared/components/ClaudeSdkStatusCard.js"
+      - "src/shared/components/NoAuthProxyCard.js"
+      - "tests/unit/claude-sdk.test.js"
+      - "package.json"
+      - "next.config.mjs"
+      - ".github/workflows/claude-sdk-checks.yml"
+  workflow_dispatch:
+
+jobs:
+  offline-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install app dependencies
+        run: npm install --no-audit --no-fund
+      - name: Install test runner
+        run: npm install --prefix tests --no-audit --no-fund
+      - name: SDK adapter offline tests
+        run: ./tests/node_modules/.bin/vitest run tests/unit/claude-sdk.test.js --reporter=verbose
+      - name: Existing Claude request translator tests
+        run: ./tests/node_modules/.bin/vitest run tests/unit/openai-to-claude.test.js --reporter=verbose
+      - name: Build Next.js standalone server
+        run: npm run build
