@@ -123,11 +123,11 @@ Respond ONLY with the JSON object, no other text.`);
   // The SDK owns Claude Code's own prompt. Passing a forged copy from the
   // Messages translator would duplicate it and override the client's intent.
   if (provider === "claude") {
-    result.system = systemParts.length ? [{ type: "text", text: systemParts.join("\\n") }] : [];
+    result.system = systemParts.length ? [{ type: "text", text: systemParts.join("\n") }] : [];
   } else {
     const claudeCodePrompt = { type: "text", text: CLAUDE_SYSTEM_PROMPT };
     result.system = systemParts.length
-      ? [claudeCodePrompt, { type: "text", text: systemParts.join("\\n"), cache_control: { type: "ephemeral", ttl: "1h" } }]
+      ? [claudeCodePrompt, { type: "text", text: systemParts.join("\n"), cache_control: { type: "ephemeral", ttl: "1h" } }]
       : [claudeCodePrompt];
   }
 

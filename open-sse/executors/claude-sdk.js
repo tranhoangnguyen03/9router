@@ -1,9 +1,8 @@
 import { BaseExecutor } from "./base.js";
-import { CLAUDE_SYSTEM_PROMPT } from "../config/appConstants.js";
 
 const SDK_URL = "claude-agent-sdk://local";
 const MAX_CONTEXT_CHARS = 2_000_000;
-const ENV_CONFLICTS = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL"];
+const ENV_CONFLICTS = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY"];
 const ENCODER = new TextEncoder();
 
 function invalid(message, status = 422) {
@@ -14,6 +13,7 @@ function invalid(message, status = 422) {
 
 function textOf(value, label) {
   if (typeof value === "string") return value;
+  if (value?.type === "text" && typeof value.text === "string") return value.text;
   if (!Array.isArray(value)) throw invalid(label + " must be text or a list of text blocks");
   return value.map((block) => {
     if (!block || block.type !== "text" || typeof block.text !== "string") {
@@ -33,13 +33,13 @@ export function buildSdkInput(body) {
   if (body.tool_choice && body.tool_choice.type !== "auto" && body.tool_choice !== "auto") {
     throw invalid("tool_choice is not supported by the Claude Agent SDK adapter");
   }
-  for (const key of ["temperature", "top_p", "top_k", "stop_sequences", "output_config", "metadata"]) {
+  for (const key of ["temperature", "top_p", "top_k", "stop_sequences", "output_config", "metadata", "service_tier"]) {
     if (body[key] != null) throw invalid(key + " cannot be mapped faithfully to Claude Agent SDK");
   }
   let system = "";
   if (body.system != null) {
     const parts = Array.isArray(body.system) ? body.system : [body.system];
-    system = parts.map((v) => textOf(v, "system")).filter((v) => v !== CLAUDE_SYSTEM_PROMPT).join("\n\n");
+    system = parts.map((v) => textOf(v, "system")).join("\n\n");
   }
   const history = [];
   for (let i = 0; i < body.messages.length; i++) {
@@ -63,9 +63,16 @@ export function buildSdkInput(body) {
     throw invalid("Claude Agent SDK prompt exceeds the router's 2 million character limit", 413);
   }
   if (!latest.trim()) throw invalid("Last user message has no text", 400);
+  if (body.thinking?.type === "disabled") {
+    throw invalid("thinking.type=disabled cannot be mapped faithfully to the Claude Agent SDK");
+  }
   let effort;
-  if (body.thinking?.type === "disabled") effort = "low";
-  else if (body.thinking?.type === "enabled") effort = "high";
+  if (body.thinking?.type === "enabled") effort = "high";
+  if (body.reasoning_effort && !effort) {
+    const allowed = ["low", "medium", "high", "xhigh", "max"];
+    if (!allowed.includes(body.reasoning_effort)) throw invalid("Unsupported reasoning_effort");
+    effort = body.reasoning_effort;
+  }
   return { prompt, systemPrompt: system, effort };
 }
 
@@ -119,12 +126,27 @@ function makeState(model) {
   return { id: null, model, blocks: new Map(), stopReason: null, usage: { input_tokens: 0, output_tokens: 0 } };
 }
 
+export function eventsFromCompletedAssistant(message, model) {
+  if (!Array.isArray(message?.message?.content) || message.message.model === "<synthetic>") return [];
+  const m = message.message;
+  const events = [{ type: "message_start", message: { id: m.id, type: "message", role: "assistant", content: [], model: m.model || model, usage: m.usage || {} } }];
+  m.content.forEach((block, index) => {
+    events.push({ type: "content_block_start", index, content_block: { ...block, ...(block.type === "text" ? { text: "" } : {}), ...(block.type === "thinking" ? { thinking: "" } : {}) } });
+    if (block.type === "text" && block.text) events.push({ type: "content_block_delta", index, delta: { type: "text_delta", text: block.text } });
+    if (block.type === "thinking" && block.thinking) events.push({ type: "content_block_delta", index, delta: { type: "thinking_delta", thinking: block.thinking } });
+    events.push({ type: "content_block_stop", index });
+  });
+  events.push({ type: "message_delta", delta: { stop_reason: m.stop_reason || "end_turn" }, usage: m.usage || {} });
+  events.push({ type: "message_stop" });
+  return events;
+}
+
 function sse(event) {
   return ENCODER.encode("event: " + event.type + "\ndata: " + JSON.stringify(event) + "\n\n");
 }
 
 function guardEnvironment(env) {
-  const present = ENV_CONFLICTS.filter((key) => typeof env[key] === "string" && env[key] !== "");
+  const present = ENV_CONFLICTS.filter((key) => typeof env[key] === "string" && env[key] !== "" && env[key] !== "0" && env[key] !== "false");
   if (present.length) throw invalid("Claude Code subscription mode cannot run with " + present.join(", ") + " set. Remove the conflicting environment values to prevent accidental API/other billing.", 409);
 }
 
@@ -169,6 +191,12 @@ export class ClaudeSdkExecutor extends BaseExecutor {
           permissionMode: "dontAsk",
           maxTurns: 1,
           includePartialMessages: true,
+          strictMcpConfig: true,
+          mcpServers: {},
+          skills: [],
+          persistSession: false,
+          verbatimPrompts: true,
+          pathToClaudeCodeExecutable: process.env.CLAUDE_CODE_EXECUTABLE || "claude",
           abortController,
           ...(input.effort ? { effort: input.effort } : {})
         }
@@ -193,6 +221,11 @@ export class ClaudeSdkExecutor extends BaseExecutor {
             if (message.type === "stream_event" && !message.parent_tool_use_id) {
               accumulateSdkEvent(state, message.event);
               if (message.event.type === "message_start") received = true;
+            } else if (message.type === "assistant" && !received && !message.parent_tool_use_id) {
+              for (const event of eventsFromCompletedAssistant(message, model)) {
+                accumulateSdkEvent(state, event);
+                if (event.type === "message_start") received = true;
+              }
             } else if (message.type === "result" && (message.is_error || message.subtype !== "success")) {
               throw sdkError(message);
             }
@@ -215,6 +248,11 @@ export class ClaudeSdkExecutor extends BaseExecutor {
               if (message.type === "stream_event" && !message.parent_tool_use_id) {
                 if (message.event.type === "message_start") received = true;
                 controller.enqueue(sse(message.event));
+              } else if (message.type === "assistant" && !received && !message.parent_tool_use_id) {
+                for (const event of eventsFromCompletedAssistant(message, model)) {
+                  if (event.type === "message_start") received = true;
+                  controller.enqueue(sse(event));
+                }
               } else if (message.type === "result" && (message.is_error || message.subtype !== "success")) {
                 throw sdkError(message);
               }
