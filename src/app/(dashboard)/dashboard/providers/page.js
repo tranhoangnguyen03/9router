@@ -16,6 +16,7 @@ import ProviderIcon from "@/shared/components/ProviderIcon";
 import { OAUTH_PROVIDERS, APIKEY_PROVIDERS } from "@/shared/constants/config";
 import {
   FREE_PROVIDERS,
+  LOCAL_PROVIDERS,
   FREE_TIER_PROVIDERS,
   WEB_COOKIE_PROVIDERS,
   OPENAI_COMPATIBLE_PREFIX,
@@ -263,6 +264,7 @@ export default function ProvidersPage() {
   const oauthEntries = Object.entries(OAUTH_PROVIDERS).filter(([, info]) =>
     matchSearch(info.name),
   );
+  const localEntries = Object.entries(LOCAL_PROVIDERS).filter(([, info]) => matchSearch(info.name));
   const freeEntries = Object.entries(FREE_PROVIDERS).filter(([, info]) =>
     matchSearch(info.name),
   );
@@ -294,6 +296,7 @@ export default function ProvidersPage() {
 
   const hasAnyResult =
     oauthEntries.length > 0 ||
+    localEntries.length > 0 ||
     freeEntries.length > 0 ||
     freeTierEntries.length > 0 ||
     apikeyEntries.length > 0 ||
@@ -405,6 +408,20 @@ export default function ProvidersPage() {
           ))}
         </div>
       </div>
+      )}
+
+      {/* Local SDK providers are not a free tier or OAuth token importer. */}
+      {localEntries.length > 0 && (
+        <div className="flex flex-col gap-4">
+          <h2 className="text-lg sm:text-xl font-semibold">Local Providers</h2>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 sm:gap-4 lg:grid-cols-3 xl:grid-cols-4">
+            {localEntries.map(([key, info]) => (
+              <ProviderCard key={key} providerId={key} provider={info}
+                stats={getProviderStats(key, "oauth")} authType="local"
+                onToggle={(active) => handleToggleProvider(key, "oauth", active)} />
+            ))}
+          </div>
+        </div>
       )}
 
       {/* Free Tier Providers */}
@@ -583,12 +600,14 @@ function ProviderCard({ providerId, provider, stats, authType, onToggle }) {
 
   const dotColors = {
     free: "bg-green-500",
+    local: "bg-slate-500",
     oauth: "bg-blue-500",
     apikey: "bg-amber-500",
     compatible: "bg-orange-500",
   };
   const dotLabels = {
     free: "Free",
+    local: "Local",
     oauth: "OAuth",
     apikey: "API Key",
     compatible: "Compatible",
@@ -632,7 +651,9 @@ function ProviderCard({ providerId, provider, stats, authType, onToggle }) {
                     </span>
                   </Badge>
                 ) : isNoAuth ? (
-                  <Badge variant="success" size="sm" dot>Ready</Badge>
+                  providerId === "claude"
+                    ? <Badge variant="default" size="sm">Local sign-in</Badge>
+                    : <Badge variant="success" size="sm" dot>Ready</Badge>
                 ) : (
                   <>
                     {getStatusDisplay(connected, error, errorCode)}

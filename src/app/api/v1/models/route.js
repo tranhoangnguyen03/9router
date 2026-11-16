@@ -2,6 +2,7 @@ import { PROVIDER_MODELS, PROVIDER_ID_TO_ALIAS } from "@/shared/constants/models
 import {
   AI_PROVIDERS,
   FREE_PROVIDERS,
+  LOCAL_PROVIDERS,
   getProviderAlias,
   isAnthropicCompatibleProvider,
   isOpenAICompatibleProvider,
@@ -169,7 +170,7 @@ export async function buildModelsList(kindFilter) {
   }
 
   // Local SDK and other no-auth providers have virtual connections, not OAuth rows.
-  for (const [id, meta] of Object.entries(FREE_PROVIDERS)) {
+  for (const [id, meta] of Object.entries({ ...FREE_PROVIDERS, ...LOCAL_PROVIDERS })) {
     if (meta.noAuth && !activeConnectionByProvider.has(id)) {
       activeConnectionByProvider.set(id, { id: "noauth-" + id, provider: id, authType: "none", isActive: true, providerSpecificData: {} });
     }

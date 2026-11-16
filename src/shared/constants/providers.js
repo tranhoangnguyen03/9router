@@ -2,7 +2,6 @@
 
 // Free Providers (kiro first, iflow last)
 export const FREE_PROVIDERS = {
-  claude: { id: "claude", alias: "cc", name: "Claude Code (local SDK)", icon: "smart_toy", color: "#D97757", website: "https://code.claude.com", noAuth: true, notice: { text: "Runs the official Claude Code binary through the Agent SDK. Run claude auth login locally; no OAuth tokens are saved in 9Router. Billing follows your Anthropic account and plan terms." } },
   kiro: { id: "kiro", alias: "kr", name: "Kiro AI", icon: "psychology_alt", color: "#FF6B35", website: "https://kiro.dev", notice: { signupUrl: "https://kiro.dev" } },
   qwen: { id: "qwen", alias: "qw", name: "Qwen Code", icon: "psychology", color: "#10B981", mediaPriority: 999, deprecated: true, deprecationNotice: "Qwen OAuth free tier was discontinued by Alibaba on 2026-04-15. New connections will not work.", website: "https://chat.qwen.ai", notice: { signupUrl: "https://chat.qwen.ai" }, serviceKinds: ["llm", "tts"], ttsConfig: { baseUrl: "http://localhost:8000/v1/audio/speech", authType: "none", authHeader: "none", format: "openai", models: [{ id: "qwen3-tts", name: "Qwen3 TTS" }] } },
   "gemini-cli": { id: "gemini-cli", alias: "gc", name: "Gemini CLI", icon: "terminal", color: "#4285F4", deprecated: true, deprecationNotice: "Gemini CLI is designed exclusively for Gemini CLI. Using it with other tools (OpenClaw, Claude, Codex...) may result in account restrictions or bans.", website: "https://github.com/google-gemini/gemini-cli", notice: { signupUrl: "https://github.com/google-gemini/gemini-cli" } },
@@ -11,6 +10,11 @@ export const FREE_PROVIDERS = {
   // qoder: { id: "qoder", alias: "qd", name: "Qoder AI", icon: "water_drop", color: "#EC4899" },
   iflow: { id: "iflow", alias: "if", name: "iFlow AI", icon: "water_drop", color: "#6366F1", website: "https://iflow.cn", notice: { signupUrl: "https://iflow.cn" } },
   opencode: { id: "opencode", alias: "oc", name: "OpenCode Free", icon: "terminal", color: "#E87040", textIcon: "OC", noAuth: true, passthroughModels: true, modelsFetcher: { url: "https://opencode.ai/zen/v1/models", type: "opencode-free" } },
+};
+
+// Local providers: access depends on each user's installed tool and subscription.
+export const LOCAL_PROVIDERS = {
+  claude: { id: "claude", alias: "cc", name: "Claude Code (local SDK)", icon: "smart_toy", color: "#D97757", website: "https://code.claude.com", noAuth: true, notice: { text: "Runs the official Claude Code binary through the Agent SDK. Run claude auth login locally; no OAuth tokens are saved in 9Router. Billing follows your Anthropic account and plan terms." } },
 };
 
 // Free Tier Providers (has free access but may require account/API key)
@@ -158,7 +162,7 @@ export function isCustomEmbeddingProvider(providerId) {
 }
 
 // All providers (combined)
-export const AI_PROVIDERS = { ...FREE_PROVIDERS, ...FREE_TIER_PROVIDERS, ...OAUTH_PROVIDERS, ...APIKEY_PROVIDERS, ...WEB_COOKIE_PROVIDERS };
+export const AI_PROVIDERS = { ...LOCAL_PROVIDERS, ...FREE_PROVIDERS, ...FREE_TIER_PROVIDERS, ...OAUTH_PROVIDERS, ...APIKEY_PROVIDERS, ...WEB_COOKIE_PROVIDERS };
 
 // Auth methods
 export const AUTH_METHODS = {
