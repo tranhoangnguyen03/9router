@@ -25,6 +25,9 @@ import {
 export async function GET(request, { params }) {
   try {
     const { provider, action } = await params;
+    if (provider === "claude") {
+      return NextResponse.json({ error: "Claude Code now uses the local official Agent SDK. Sign in with claude auth login; 9Router does not handle its OAuth tokens." }, { status: 410 });
+    }
     const { searchParams } = new URL(request.url);
 
     if (action === "authorize") {
@@ -129,6 +132,9 @@ export async function GET(request, { params }) {
 export async function POST(request, { params }) {
   try {
     const { provider, action } = await params;
+    if (provider === "claude") {
+      return NextResponse.json({ error: "Claude Code now uses the local official Agent SDK. Sign in with claude auth login; 9Router does not handle its OAuth tokens." }, { status: 410 });
+    }
     let body;
     try {
       body = await request.json();

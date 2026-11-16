@@ -16,8 +16,10 @@ import { PerplexityWebExecutor } from "./perplexity-web.js";
 import { OllamaLocalExecutor } from "./ollama-local.js";
 import { CommandCodeExecutor } from "./commandcode.js";
 import { DefaultExecutor } from "./default.js";
+import { ClaudeSdkExecutor } from "./claude-sdk.js";
 
 const executors = {
+  claude: new ClaudeSdkExecutor(),
   antigravity: new AntigravityExecutor(),
   azure: new AzureExecutor(),
   "gemini-cli": new GeminiCLIExecutor(),
@@ -63,6 +65,7 @@ export { CodexExecutor } from "./codex.js";
 export { CursorExecutor } from "./cursor.js";
 export { VertexExecutor } from "./vertex.js";
 export { DefaultExecutor } from "./default.js";
+export { ClaudeSdkExecutor } from "./claude-sdk.js";
 export { QwenExecutor } from "./qwen.js";
 export { OpenCodeExecutor } from "./opencode.js";
 export { OpenCodeGoExecutor } from "./opencode-go.js";

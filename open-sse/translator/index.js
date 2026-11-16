@@ -1,7 +1,6 @@
 import { FORMATS } from "./formats.js";
 import { ensureToolCallIds, fixMissingToolResponses } from "./helpers/toolCallHelper.js";
 import { prepareClaudeRequest } from "./helpers/claudeHelper.js";
-import { cloakClaudeTools } from "../utils/claudeCloaking.js";
 import { filterToOpenAIFormat } from "./helpers/openaiHelper.js";
 import { normalizeThinkingConfig } from "../services/provider.js";
 import { AntigravityExecutor } from "../executors/antigravity.js";
@@ -104,7 +103,7 @@ export function translateRequest(sourceFormat, targetFormat, model, body, stream
     if (targetFormat !== FORMATS.OPENAI) {
       const fromOpenAI = requestRegistry.get(`${FORMATS.OPENAI}:${targetFormat}`);
       if (fromOpenAI) {
-        result = fromOpenAI(model, result, stream, credentials);
+        result = fromOpenAI(model, result, stream, credentials, provider);
       }
     }
   }
@@ -116,23 +115,13 @@ export function translateRequest(sourceFormat, targetFormat, model, body, stream
   }
 
   // Final step: prepare request for Claude format endpoints
-  if (targetFormat === FORMATS.CLAUDE) {
+  if (targetFormat === FORMATS.CLAUDE && provider !== "claude") {
     const apiKey = credentials?.accessToken || credentials?.apiKey || null;
     result = prepareClaudeRequest(result, provider, apiKey, connectionId);
   }
 
-  // Claude cloaking: rename client tools with _cc suffix (anti-ban)
-  // Only for claude provider (not anthropic-compatible-*) with OAuth token
-  if (provider === "claude") {
-    const apiKey = credentials?.accessToken || credentials?.apiKey || null;
-    if (apiKey?.includes("sk-ant-oat")) {
-      const { body: cloakedBody, toolNameMap } = cloakClaudeTools(result);
-      result = cloakedBody;
-      if (toolNameMap?.size > 0) {
-        result._toolNameMap = toolNameMap;
-      }
-    }
-  }
+  // The native Claude provider now uses the official Agent SDK. Never rewrite
+  // client tools or forge Claude Code headers to influence upstream billing.
 
   // Antigravity cloaking disabled
   // if (provider === FORMATS.ANTIGRAVITY && body.userAgent !== FORMATS.ANTIGRAVITY) {

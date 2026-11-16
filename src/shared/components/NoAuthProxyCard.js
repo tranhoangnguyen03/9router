@@ -5,6 +5,7 @@ import PropTypes from "prop-types";
 import Card from "./Card";
 import Select from "./Select";
 import Badge from "./Badge";
+import ClaudeSdkStatusCard from "./ClaudeSdkStatusCard";
 
 const NONE_PROXY_POOL_VALUE = "__none__";
 
@@ -54,6 +55,10 @@ export default function NoAuthProxyCard({ providerId }) {
       setSaving(false);
     }
   };
+
+  if (providerId === "claude") {
+    return <ClaudeSdkStatusCard />;
+  }
 
   return (
     <Card>
