@@ -7,7 +7,7 @@ This fork **replaces** the old `cc/...` Claude provider's direct HTTP/OAuth rout
 1. Run 9Router on a local machine or a persistent self-hosted Node.js server. This backend is not supported in serverless deployments.
 2. Install the official Claude Code CLI, then run `claude auth login` as the **same operating-system user** running 9Router.
 3. Open **Providers → Claude Code (local SDK)** to inspect login status. If needed, set `CLAUDE_CODE_EXECUTABLE` to the full path of the installed `claude` executable before starting 9Router.
-4. Use existing `cc/<model-id>` IDs. The `claude` provider is now local and has no 9Router OAuth account/connection rows.
+4. Use existing `cc/<model-id>` IDs. The `claude` provider is now local and has no 9Router OAuth account/connection rows. Legacy OAuth rows in an existing database are ignored (not silently deleted); remove them separately if desired.
 
 This provider does not read, store, or refresh Claude Code OAuth credentials. It does not forge headers, alter upstream requests, copy session tokens, or silently fall back to paid API keys. It fails if `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL`, or cloud-provider selector variables are set. Authentication and billing are owned by Claude Code / Anthropic. Included subscription quota is **not guaranteed**: verify account usage and Anthropic's current rules for this specific setup before use.
 

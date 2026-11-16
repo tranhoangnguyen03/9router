@@ -417,7 +417,7 @@ export default function ProvidersPage() {
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 sm:gap-4 lg:grid-cols-3 xl:grid-cols-4">
             {localEntries.map(([key, info]) => (
               <ProviderCard key={key} providerId={key} provider={info}
-                stats={getProviderStats(key, "oauth")} authType="local"
+                stats={{ ...getProviderStats(key, "oauth"), allDisabled: false, total: 0 }} authType="local"
                 onToggle={(active) => handleToggleProvider(key, "oauth", active)} />
             ))}
           </div>

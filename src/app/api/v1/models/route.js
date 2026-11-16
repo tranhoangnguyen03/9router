@@ -171,7 +171,7 @@ export async function buildModelsList(kindFilter) {
 
   // Local SDK and other no-auth providers have virtual connections, not OAuth rows.
   for (const [id, meta] of Object.entries({ ...FREE_PROVIDERS, ...LOCAL_PROVIDERS })) {
-    if (meta.noAuth && !activeConnectionByProvider.has(id)) {
+    if (meta.noAuth && (LOCAL_PROVIDERS[id] || !activeConnectionByProvider.has(id))) {
       activeConnectionByProvider.set(id, { id: "noauth-" + id, provider: id, authType: "none", isActive: true, providerSpecificData: {} });
     }
   }
