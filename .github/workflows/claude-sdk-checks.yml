@@ -30,10 +30,10 @@ jobs:
       - name: Install app dependencies
         run: npm install --no-audit --no-fund
       - name: Install test runner
-        run: npm install --prefix tests --no-audit --no-fund
+        run: npm install --no-save --no-audit --no-fund vitest@^4.0.0
       - name: SDK adapter offline tests
-        run: ./tests/node_modules/.bin/vitest run tests/unit/claude-sdk.test.js tests/unit/claude-sdk-tools.test.js --reporter=verbose
+        run: ./node_modules/.bin/vitest run tests/unit/claude-sdk.test.js tests/unit/claude-sdk-tools.test.js --reporter=verbose
       - name: Existing Claude request translator tests
-        run: ./tests/node_modules/.bin/vitest run tests/unit/openai-to-claude.test.js --reporter=verbose
+        run: ./node_modules/.bin/vitest run tests/unit/openai-to-claude.test.js --reporter=verbose
       - name: Build Next.js standalone server
         run: npm run build
