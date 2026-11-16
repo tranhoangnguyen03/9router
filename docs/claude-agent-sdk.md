@@ -19,7 +19,7 @@ This provider does not read, store, or refresh Claude Code OAuth credentials. It
 | Local unmodified Claude Code executable and its own login | Implemented, requires local live acceptance |
 | Single-turn text, Claude Messages JSON, streaming SSE | Implemented, offline tests added |
 | Multi-turn text context | Converted to quoted prior transcript in each request; **not** a native Claude Code session replay |
-| Client-owned tool use and tool results | **Not supported.** The adapter rejects tool definitions with 422. No client tool is run in the router |
+| Client-owned tool use and tool results | **In-memory SDK MCP bridge implemented; live acceptance pending.** 9Router returns tool calls and waits for client results without executing them |
 | Images, audio, non-text message content | Rejected with 422 |
 | Temperature, top-p, stop sequences, structured output | Rejected with 422 where supplied |
 | Exact `max_tokens` control | SDK has no equivalent per-query Messages API option. Not enforced by the adapter |
@@ -27,7 +27,7 @@ This provider does not read, store, or refresh Claude Code OAuth credentials. It
 | SDK version, model, login compatibility | Local validation required |
 | Hosted/multi-user subscription routing | Not supported |
 
-**Important:** This is a *partial implementation*, not a full drop-in Messages API replacement. It must not be merged as complete until the tool/session contract is satisfied and live acceptance passes. In particular, Pi and most coding agents send tools with every request, so they will **not** work normally through this backend yet.
+**Important:** This is *not yet a validated full drop-in Messages API replacement*. Tool use is implemented with an in-memory SDK MCP bridge, but it must pass real Pi/Claude live acceptance before release. After a router restart or 120 seconds without results, the bridge rejects stale results with HTTP 409 instead of replaying a client tool. Multi-turn sessions outside a pending tool call still use quoted history, not native session replay.
 
 ## Developer acceptance
 
@@ -36,10 +36,10 @@ Run the offline test suite from the project's test setup:
 ```sh
 cd tests
 npm install
-npm test -- claude-sdk.test.js
+npm test -- claude-sdk.test.js claude-sdk-tools.test.js
 ```
 
-Then run local live checks: check login, one text JSON turn, one SSE turn, repeated turns, client abort, missing CLI, expired login, conflicting environment variables, and account usage/billing category. Confirm no upstream API key or OAuth token is sent by 9Router. Check a client tool call separately; it must fail with a clear error until an actual tool bridge is built.
+Then run local live checks: check login, one text JSON turn, one SSE turn, real client tool calls and results (sequential and parallel), repeated turns, restart in a pending tool call, client abort, missing CLI, expired login, conflicting environment variables, and account usage/billing category. Confirm no upstream API key or OAuth token is sent by 9Router. Verify no client tool runs in the 9Router process.
 
 Reference implementation to study for full Pi tool/session parity: [pi-claude-bridge](https://github.com/elidickinson/pi-claude-bridge) (especially `src/mcp-server.ts`, `src/session-sync.ts`, `src/index.ts`). Reproducing those semantics in a stateless HTTP router needs careful state and timeout handling.
 

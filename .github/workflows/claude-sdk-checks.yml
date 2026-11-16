@@ -12,6 +12,7 @@ on:
       - "src/shared/components/ClaudeSdkStatusCard.js"
       - "src/shared/components/NoAuthProxyCard.js"
       - "tests/unit/claude-sdk.test.js"
+      - "tests/unit/claude-sdk-tools.test.js"
       - "package.json"
       - "next.config.mjs"
       - ".github/workflows/claude-sdk-checks.yml"
@@ -31,7 +32,7 @@ jobs:
       - name: Install test runner
         run: npm install --prefix tests --no-audit --no-fund
       - name: SDK adapter offline tests
-        run: ./tests/node_modules/.bin/vitest run tests/unit/claude-sdk.test.js --reporter=verbose
+        run: ./tests/node_modules/.bin/vitest run tests/unit/claude-sdk.test.js tests/unit/claude-sdk-tools.test.js --reporter=verbose
       - name: Existing Claude request translator tests
         run: ./tests/node_modules/.bin/vitest run tests/unit/openai-to-claude.test.js --reporter=verbose
       - name: Build Next.js standalone server

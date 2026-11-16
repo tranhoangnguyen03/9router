@@ -258,6 +258,7 @@ class ToolSession {
       this.startTimer = setTimeout(() => {
         if (this.current && !this.current.started) this.cancel("SDK start timed out");
       }, START_MS);
+      this.startTimer.unref?.();
       void this.consume();
     } catch (error) {
       this.current?.fail(error);
@@ -296,6 +297,7 @@ class ToolSession {
         this.waiting = true;
         this.bindSignal(null); // A finished tool-use turn must not be aborted by its old HTTP request.
         this.waitTimer = setTimeout(() => this.cancel("Client tool results timed out"), WAIT_MS);
+        this.waitTimer.unref?.();
         this.current = null;
       } else {
         this.current = null;
@@ -410,4 +412,13 @@ export async function executeSdkToolRequest({ model, body, stream, signal, log, 
   } catch (error) {
     return { ...descriptor, response: utils.errorResponse(error) };
   }
+}
+
+// This is also useful when shutting down the local router after a failed request.
+export function closeAllSdkToolSessions(reason = "shutdown") {
+  for (const session of [...sessions]) session.cancel(reason);
+}
+
+export function getActiveSdkToolSessionCount() {
+  return sessions.size;
 }
