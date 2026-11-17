@@ -1,54 +1,64 @@
 # syntax=docker/dockerfile:1.7
-ARG NODE_IMAGE=node:22-alpine
+ARG NODE_IMAGE=node:22.23.4-alpine@sha256:fe4f6d74e20370acb04ad889077d14d0f64a9c8ea6a42bc60cddf1e844699914
 FROM ${NODE_IMAGE} AS base
 WORKDIR /app
 
+FROM base AS tests
+RUN apk add --no-cache python3 make g++ linux-headers
+COPY package.json package-lock.json ./
+RUN --mount=type=cache,target=/root/.npm npm ci
+COPY tests/package.json tests/package-lock.json ./tests/
+RUN --mount=type=cache,target=/root/.npm cd tests && npm ci
+COPY --chown=node:node . ./
+USER node
+
 FROM base AS builder
-
-RUN apk --no-cache upgrade && apk --no-cache add python3 make g++ linux-headers
-
-COPY package.json ./
-RUN --mount=type=cache,target=/root/.npm \
-  npm install
-
+RUN apk add --no-cache python3 make g++ linux-headers
+COPY package.json package-lock.json ./
+RUN --mount=type=cache,target=/root/.npm npm ci
 COPY . ./
 ENV NEXT_TELEMETRY_DISABLED=1
+# Bound build heap on the small production host; never apply this to the runner.
+ARG NODE_OPTIONS="--max-old-space-size=1024"
 RUN npm run build
 
 FROM ${NODE_IMAGE} AS runner
+ARG VCS_REF=unknown
 WORKDIR /app
+RUN apk add --no-cache ffmpeg
 
-LABEL org.opencontainers.image.title="9router"
+LABEL org.opencontainers.image.title="9router" \
+      org.opencontainers.image.source="https://github.com/tranhoangnguyen03/9router" \
+      org.opencontainers.image.revision=$VCS_REF
 
-ENV NODE_ENV=production
-ENV PORT=20128
-ENV HOSTNAME=0.0.0.0
-ENV NEXT_TELEMETRY_DISABLED=1
-ENV DATA_DIR=/app/data
+ENV NODE_ENV=production \
+    PORT=20128 \
+    HOSTNAME=0.0.0.0 \
+    NEXT_TELEMETRY_DISABLED=1 \
+    DATA_DIR=/app/data
 
 COPY --from=builder /app/public ./public
 COPY --from=builder /app/.next/static ./.next/static
 COPY --from=builder /app/.next/standalone ./
+COPY --from=builder /app/custom-server.js ./custom-server.js
 COPY --from=builder /app/open-sse ./open-sse
-# Next file tracing can omit sibling files; MITM runs server.js as a separate process.
 COPY --from=builder /app/src/mitm ./src/mitm
-# Standalone node_modules may omit deps only required by the MITM child process.
 COPY --from=builder /app/node_modules/node-forge ./node_modules/node-forge
-# The Agent SDK starts a native Claude Code binary; retain its optional platform package.
+COPY --from=builder /app/node_modules/next ./node_modules/next
+COPY --from=builder /app/node_modules/sql.js ./node_modules/sql.js
+# node-machine-id is createRequire-loaded at runtime; tracing omits it.
+COPY --from=builder /app/node_modules/node-machine-id ./node_modules/node-machine-id
+# Lazy runtime packages escape tracing; reuse the lockfile-installed copies.
+COPY --from=builder /app/node_modules/wreq-js ./node_modules/wreq-js
+COPY --from=builder /app/node_modules/@wreq-js ./node_modules/@wreq-js
+COPY --from=builder /app/node_modules/playwright-core ./node_modules/playwright-core
+# The SDK starts a native CLI; dynamic resolution escapes file tracing.
 COPY --from=builder /app/node_modules/@anthropic-ai ./node_modules/@anthropic-ai
-COPY --from=builder /app/node_modules/@modelcontextprotocol ./node_modules/@modelcontextprotocol
-COPY --from=builder /app/node_modules/zod ./node_modules/zod
 
-RUN mkdir -p /app/data && chown -R node:node /app && \
-  mkdir -p /app/data-home && chown node:node /app/data-home && \
-  ln -sf /app/data-home /root/.9router 2>/dev/null || true
+RUN mkdir -p /app/data && chown node:node /app/data
 
-# Fix permissions at runtime (handles mounted volumes)
-RUN apk --no-cache upgrade && apk --no-cache add su-exec && \
-  printf '#!/bin/sh\nchown -R node:node /app/data /app/data-home 2>/dev/null\nexec su-exec node "$@"\n' > /entrypoint.sh && \
-  chmod +x /entrypoint.sh
-
+USER node
 EXPOSE 20128
-
-ENTRYPOINT ["/entrypoint.sh"]
-CMD ["node", "server.js"]
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+  CMD node -e 'fetch("http://127.0.0.1:20128/api/health").then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))'
+CMD ["node", "custom-server.js"]

@@ -1,6 +1,9 @@
 import { register } from "../index.js";
 import { FORMATS } from "../formats.js";
-import { adjustMaxTokens } from "../helpers/maxTokensHelper.js";
+import { adjustMaxTokens } from "../formats/maxTokens.js";
+import { encodeDataUri } from "../concerns/image.js";
+import { collapseTextParts } from "../concerns/message.js";
+import { ROLE, GEMINI_ROLE, OPENAI_BLOCK } from "../schema/index.js";
 
 // Convert Gemini request to OpenAI format
 export function geminiToOpenAIRequest(model, body, stream) {
@@ -30,7 +33,7 @@ export function geminiToOpenAIRequest(model, body, stream) {
     const systemText = extractGeminiText(body.systemInstruction);
     if (systemText) {
       result.messages.push({
-        role: "system",
+        role: ROLE.SYSTEM,
         content: systemText
       });
     }
@@ -41,7 +44,8 @@ export function geminiToOpenAIRequest(model, body, stream) {
     for (const content of body.contents) {
       const converted = convertGeminiContent(content);
       if (converted) {
-        result.messages.push(converted);
+        if (Array.isArray(converted)) result.messages.push(...converted);
+        else result.messages.push(converted);
       }
     }
   }
@@ -53,7 +57,7 @@ export function geminiToOpenAIRequest(model, body, stream) {
       if (tool.functionDeclarations) {
         for (const func of tool.functionDeclarations) {
           result.tools.push({
-            type: "function",
+            type: OPENAI_BLOCK.FUNCTION,
             function: {
               name: func.name,
               description: func.description || "",
@@ -70,7 +74,7 @@ export function geminiToOpenAIRequest(model, body, stream) {
 
 // Convert Gemini content to OpenAI message
 function convertGeminiContent(content) {
-  const role = content.role === "user" ? "user" : "assistant";
+  const role = content.role === GEMINI_ROLE.USER ? ROLE.USER : ROLE.ASSISTANT;
   
   if (!content.parts || !Array.isArray(content.parts)) {
     return null;
@@ -78,25 +82,28 @@ function convertGeminiContent(content) {
 
   const parts = [];
   const toolCalls = [];
+  const toolResults = [];
 
   for (const part of content.parts) {
     if (part.text !== undefined) {
-      parts.push({ type: "text", text: part.text });
+      parts.push({ type: OPENAI_BLOCK.TEXT, text: part.text });
     }
 
     if (part.inlineData) {
       parts.push({
-        type: "image_url",
+        type: OPENAI_BLOCK.IMAGE_URL,
         image_url: {
-          url: `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`
+          url: encodeDataUri(part.inlineData.mimeType, part.inlineData.data)
         }
       });
     }
 
     if (part.functionCall) {
+      // Gemini lacks a native call id; derive a deterministic one from the name so the
+      // matching functionResponse maps to the same tool_call_id (providers require pairing).
       toolCalls.push({
-        id: `call_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-        type: "function",
+        id: part.functionCall.id || `call_${part.functionCall.name}`,
+        type: OPENAI_BLOCK.FUNCTION,
         function: {
           name: part.functionCall.name,
           arguments: JSON.stringify(part.functionCall.args || {})
@@ -105,31 +112,34 @@ function convertGeminiContent(content) {
     }
 
     if (part.functionResponse) {
-      return {
-        role: "tool",
-        tool_call_id: part.functionResponse.id || part.functionResponse.name,
+      toolResults.push({
+        role: ROLE.TOOL,
+        tool_call_id: part.functionResponse.id || `call_${part.functionResponse.name}`,
         content: JSON.stringify(part.functionResponse.response?.result || part.functionResponse.response || {})
-      };
+      });
     }
   }
 
+  let message = null;
   if (toolCalls.length > 0) {
-    const result = { role: "assistant" };
+    message = { role: ROLE.ASSISTANT };
     if (parts.length > 0) {
-      result.content = parts.length === 1 ? parts[0].text : parts;
+      message.content = parts.length === 1 ? parts[0].text : parts;
     }
-    result.tool_calls = toolCalls;
-    return result;
-  }
-
-  if (parts.length > 0) {
-    return {
+    message.tool_calls = toolCalls;
+  } else if (parts.length > 0) {
+    message = {
       role,
-      content: parts.length === 1 && parts[0].type === "text" ? parts[0].text : parts
+      content: collapseTextParts(parts)
     };
   }
 
-  return null;
+  // Complete the parts scan before returning: parallel results must all precede
+  // any co-located follow-up text or calls in the OpenAI message sequence.
+  if (toolResults.length > 0) {
+    return message ? [...toolResults, message] : toolResults;
+  }
+  return message;
 }
 
 // Extract text from Gemini content

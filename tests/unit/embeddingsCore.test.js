@@ -141,6 +141,51 @@ describe("buildEmbeddingsBody", () => {
     const sent = JSON.parse(init.body);
     expect(sent.encoding_format).toBe("float");
   });
+
+  it("gemini single input forwards dimensions as outputDimensionality", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(makeProviderResponse({
+      embedding: { values: [0.1, 0.2, 0.3] },
+    }));
+
+    await handleEmbeddingsCore(makeOptions({
+      body: {
+        model: "gemini/gemini-embedding-2-preview",
+        input: "test",
+        dimensions: 1536,
+      },
+      modelInfo: { provider: "gemini", model: "gemini-embedding-2-preview" },
+      credentials: { apiKey: "gemini-key" },
+    }));
+
+    const [, init] = vi.mocked(fetch).mock.calls[0];
+    const sent = JSON.parse(init.body);
+    expect(sent.outputDimensionality).toBe(1536);
+  });
+
+  it("gemini batch input forwards dimensions on each request", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(makeProviderResponse({
+      embeddings: [
+        { values: [0.1, 0.2, 0.3] },
+        { values: [0.4, 0.5, 0.6] },
+      ],
+    }));
+
+    await handleEmbeddingsCore(makeOptions({
+      body: {
+        model: "gemini/gemini-embedding-2-preview",
+        input: ["hello", "world"],
+        dimensions: 1536,
+      },
+      modelInfo: { provider: "gemini", model: "gemini-embedding-2-preview" },
+      credentials: { apiKey: "gemini-key" },
+    }));
+
+    const [, init] = vi.mocked(fetch).mock.calls[0];
+    const sent = JSON.parse(init.body);
+    expect(sent.requests).toHaveLength(2);
+    expect(sent.requests[0].outputDimensionality).toBe(1536);
+    expect(sent.requests[1].outputDimensionality).toBe(1536);
+  });
 });
 
 // ─── Test: buildEmbeddingsUrl ────────────────────────────────────────────────
@@ -177,6 +222,21 @@ describe("buildEmbeddingsUrl", () => {
     expect(url).toBe("https://openrouter.ai/api/v1/embeddings");
   });
 
+  it("vercel-ai-gateway → https://ai-gateway.vercel.sh/v1/embeddings", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(makeProviderResponse(VALID_EMBEDDING_RESPONSE));
+
+    await handleEmbeddingsCore(makeOptions({
+      modelInfo: { provider: "vercel-ai-gateway", model: "openai/text-embedding-3-small" },
+      credentials: { apiKey: "vag-test-key" },
+    }));
+
+    const [url, init] = vi.mocked(fetch).mock.calls[0];
+    const sent = JSON.parse(init.body);
+    expect(url).toBe("https://ai-gateway.vercel.sh/v1/embeddings");
+    expect(init.headers.Authorization).toBe("Bearer vag-test-key");
+    expect(sent.model).toBe("openai/text-embedding-3-small");
+  });
+
   it("openai-compatible-* → uses baseUrl from providerSpecificData", async () => {
     vi.mocked(fetch).mockResolvedValueOnce(makeProviderResponse(VALID_EMBEDDING_RESPONSE));
 
@@ -205,6 +265,77 @@ describe("buildEmbeddingsUrl", () => {
 
     const [url] = vi.mocked(fetch).mock.calls[0];
     expect(url).toBe("https://myhost.ai/v1/embeddings");
+  });
+
+  it("ollama-local default host → http://localhost:11434/v1/embeddings", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(makeProviderResponse(VALID_EMBEDDING_RESPONSE));
+
+    await handleEmbeddingsCore(makeOptions({
+      modelInfo: { provider: "ollama-local", model: "nomic-embed-text" },
+      credentials: {},
+    }));
+
+    expect(fetch).toHaveBeenCalledWith(
+      "http://localhost:11434/v1/embeddings",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ model: "nomic-embed-text", input: "Hello world", encoding_format: "float" }),
+      })
+    );
+  });
+
+  it("ollama-local custom host → respects baseUrl from providerSpecificData", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(makeProviderResponse(VALID_EMBEDDING_RESPONSE));
+
+    await handleEmbeddingsCore(makeOptions({
+      modelInfo: { provider: "ollama-local", model: "bge-m3" },
+      credentials: { providerSpecificData: { baseUrl: "http://192.168.1.100:11434" } },
+    }));
+
+    expect(fetch).toHaveBeenCalledWith(
+      "http://192.168.1.100:11434/v1/embeddings",
+      expect.anything()
+    );
+  });
+
+  it("ollama-local custom host with trailing slashes → strips trailing slashes cleanly", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(makeProviderResponse(VALID_EMBEDDING_RESPONSE));
+
+    await handleEmbeddingsCore(makeOptions({
+      modelInfo: { provider: "ollama-local", model: "bge-m3" },
+      credentials: { providerSpecificData: { baseUrl: "http://192.168.1.100:11434///" } },
+    }));
+
+    expect(fetch).toHaveBeenCalledWith(
+      "http://192.168.1.100:11434/v1/embeddings",
+      expect.anything()
+    );
+  });
+
+  it("ollama-local custom host with /v1 or /v1/embeddings suffix → normalizes without duplication", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(makeProviderResponse(VALID_EMBEDDING_RESPONSE));
+
+    await handleEmbeddingsCore(makeOptions({
+      modelInfo: { provider: "ollama-local", model: "qwen3-embedding" },
+      credentials: { providerSpecificData: { baseUrl: "http://192.168.1.100:11434/v1" } },
+    }));
+
+    expect(fetch).toHaveBeenCalledWith(
+      "http://192.168.1.100:11434/v1/embeddings",
+      expect.anything()
+    );
+
+    vi.mocked(fetch).mockResolvedValueOnce(makeProviderResponse(VALID_EMBEDDING_RESPONSE));
+
+    await handleEmbeddingsCore(makeOptions({
+      modelInfo: { provider: "ollama-local", model: "qwen3-embedding" },
+      credentials: { providerSpecificData: { baseUrl: "http://192.168.1.100:11434/v1/embeddings" } },
+    }));
+
+    expect(fetch).toHaveBeenCalledWith(
+      "http://192.168.1.100:11434/v1/embeddings",
+      expect.anything()
+    );
   });
 
   it("openai-compatible-* without baseUrl → falls back to api.openai.com", async () => {
@@ -292,6 +423,21 @@ describe("buildEmbeddingsHeaders", () => {
     expect(init.headers["Authorization"]).toBe("Bearer sk-or-key");
   });
 
+  it("github → Copilot embeddings endpoint with Copilot token and IDE headers", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(makeProviderResponse(VALID_EMBEDDING_RESPONSE));
+
+    await handleEmbeddingsCore(makeOptions({
+      modelInfo: { provider: "github", model: "text-embedding-3-small" },
+      credentials: { accessToken: "gho-oauth", copilotToken: "tid=copilot" },
+    }));
+
+    const [url, init] = vi.mocked(fetch).mock.calls[0];
+    expect(url).toBe("https://api.githubcopilot.com/embeddings");
+    expect(init.headers["Authorization"]).toBe("Bearer tid=copilot");
+    expect(init.headers["copilot-integration-id"]).toBe("vscode-chat");
+    expect(init.headers["editor-version"]).toMatch(/^vscode\//);
+  });
+
   it("openai-compatible-* → Authorization: Bearer only (no extra headers)", async () => {
     vi.mocked(fetch).mockResolvedValueOnce(makeProviderResponse(VALID_EMBEDDING_RESPONSE));
 
@@ -307,6 +453,30 @@ describe("buildEmbeddingsHeaders", () => {
     expect(init.headers["Authorization"]).toBe("Bearer local-key");
     expect(init.headers["HTTP-Referer"]).toBeUndefined();
     expect(init.headers["X-Title"]).toBeUndefined();
+  });
+
+  it("ollama-local → Content-Type only by default, Authorization when apiKey is present", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(makeProviderResponse(VALID_EMBEDDING_RESPONSE));
+
+    await handleEmbeddingsCore(makeOptions({
+      modelInfo: { provider: "ollama-local", model: "nomic-embed-text" },
+      credentials: {},
+    }));
+
+    const [, initDefault] = vi.mocked(fetch).mock.calls[0];
+    expect(initDefault.headers["Content-Type"]).toBe("application/json");
+    expect(initDefault.headers["Authorization"]).toBeUndefined();
+
+    vi.mocked(fetch).mockResolvedValueOnce(makeProviderResponse(VALID_EMBEDDING_RESPONSE));
+
+    await handleEmbeddingsCore(makeOptions({
+      modelInfo: { provider: "ollama-local", model: "nomic-embed-text" },
+      credentials: { apiKey: "ollama-proxy-secret" },
+    }));
+
+    const [, initAuth] = vi.mocked(fetch).mock.calls[1];
+    expect(initAuth.headers["Content-Type"]).toBe("application/json");
+    expect(initAuth.headers["Authorization"]).toBe("Bearer ollama-proxy-secret");
   });
 });
 

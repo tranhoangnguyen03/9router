@@ -76,11 +76,13 @@ describe("Claude Agent SDK adapter", () => {
     expect(invoked).not.toHaveBeenCalled();
   });
 
-  it("does not convert thinking disabled into low thinking", () => {
-    expect(() => buildSdkInput({
+  it("maps disabled thinking to the SDK's native setting, not low effort", () => {
+    const input = buildSdkInput({
       messages: [{ role: "user", content: "Hello" }],
       thinking: { type: "disabled" }
-    })).toThrow(/cannot be mapped/);
+    });
+    expect(input.thinking).toEqual({ type: "disabled" });
+    expect(input.effort).toBeUndefined();
   });
 
   it("rejects images and unknown request controls before starting Claude Code", () => {

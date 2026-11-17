@@ -1,6 +1,6 @@
 // SDK <-> HTTP tool boundary. The external client, not the router, runs tools.
 // In-memory by design: after a router restart we reject orphan tool results.
-import { sdkRuntimeOptions } from "./claude-sdk-runtime.js";
+import { sdkRuntimeOptions, resolveSdkExecutable } from "./claude-sdk-runtime.js";
 
 const SERVER_NAME = "router";
 const TOOL_ID_META = "claudecode/toolUseId";
@@ -35,9 +35,14 @@ function toolBlockContent(value) {
 }
 
 function lastResultBlocks(body) {
-  const last = body?.messages?.at(-1);
-  if (last?.role !== "user" || !Array.isArray(last.content)) return [];
-  return last.content.filter((block) => block?.type === "tool_result");
+  const results = [];
+  for (let i = (body?.messages?.length || 0) - 1; i >= 0; i--) {
+    const message = body.messages[i];
+    if (message?.role !== "user" || !Array.isArray(message.content) || !message.content.some((block) => block?.type === "tool_result")) break;
+    if (message.content.some((block) => block?.type !== "tool_result")) throw fault("Tool-resume turns must contain only tool results", 409);
+    results.unshift(...message.content);
+  }
+  return results;
 }
 
 export function hasSdkToolBoundary(body) {
@@ -57,7 +62,7 @@ function normalizeTools(body) {
   const result = [];
   const names = new Set();
   for (const [i, def] of (body.tools || []).entries()) {
-    if (!def || (def.type && def.type !== "function")) throw fault("Only client-defined function tools are supported");
+    if (!def || (def.type && !["function", "custom"].includes(def.type))) throw fault("Only client-defined function tools are supported");
     if (typeof def.name !== "string" || !def.name.length) throw fault("Tool #" + i + " has no name");
     if (names.has(def.name)) throw fault("Duplicate client tool: " + def.name);
     names.add(def.name);
@@ -65,6 +70,7 @@ function normalizeTools(body) {
     if (!schema || typeof schema !== "object" || Array.isArray(schema) || schema.type !== "object") {
       throw fault("Tool " + def.name + " must have a JSON Schema object input_schema");
     }
+    if (["anyOf", "oneOf", "allOf"].some((key) => key in schema)) throw fault("Tool " + def.name + " has an unsupported root schema combinator");
     result.push({
       name: "t" + i,
       externalName: def.name,
@@ -87,6 +93,7 @@ function inputText(blocks, label) {
     if (!block || !["text", "tool_use", "tool_result"].includes(block.type)) {
       throw fault(label + " contains unsupported content");
     }
+    if (block.type === "text" && typeof block.text !== "string") throw fault(label + " contains invalid text");
     return block.type === "text" ? block.text : JSON.stringify(block);
   }).join("\n");
 }
@@ -97,6 +104,7 @@ export function buildToolPrompt(body) {
   if (last.role !== "user") throw fault("Last message must be a user turn", 422);
   const latest = inputText(last.content, "Last user message");
   if (!latest.trim()) throw fault("User message is empty", 400);
+  if (body.messages.some((m) => !m || !["user", "assistant"].includes(m.role))) throw fault("Unsupported conversation role");
   const history = body.messages.slice(0, -1).map((m) => JSON.stringify({ role: m.role, content: inputText(m.content, "History") })).join("\n");
   const systemParts = Array.isArray(body.system) ? body.system : (body.system == null ? [] : [body.system]);
   const system = systemParts.map((v) => typeof v === "string" ? v : v?.type === "text" ? v.text : (() => { throw fault("Only text system blocks are supported"); })()).join("\n");
@@ -143,7 +151,8 @@ class Turn {
     this.stream = stream;
     this.utils = utils;
     this.state = utils.makeState(model);
-    this.events = [];
+    this.terminalEvents = [];
+    this.canceled = false;
     this.ready = deferred();
     this.done = deferred();
     this.closed = false;
@@ -153,33 +162,56 @@ class Turn {
     if (stream) {
       this.readable = new ReadableStream({
         start: (controller) => { this.controller = controller; },
-        cancel: () => { if (!this.closed) onCancel(); }
+        pull: () => { this.demand?.(); this.demand = null; },
+        cancel: () => {
+          this.canceled = true;
+          this.demand?.();
+          if (!this.closed) onCancel();
+        }
       });
     }
   }
-  push(event) {
+  async push(event) {
+    if (this.closed) return;
+    if (this.stream && this.controller.desiredSize <= 0) await new Promise((resolve) => { this.demand = resolve; });
     if (this.closed) return;
     this.utils.accumulateSdkEvent(this.state, event);
-    this.events.push(event);
+    if (event.type === "message_delta") this.stopReason = event.delta?.stop_reason || this.stopReason;
+    // A final HTTP turn is successful only after the SDK's result, not message_stop.
+    if ((event.type === "message_delta" || event.type === "message_stop") && this.stopReason !== "tool_use") {
+      this.terminalEvents.push(event);
+      return;
+    }
     if (event.type === "message_start" && !this.started) {
       this.started = true;
       this.ready.resolve();
     }
     if (this.stream) this.controller.enqueue(this.utils.sse(event));
-    if (event.type === "message_delta") this.stopReason = event.delta?.stop_reason || this.stopReason;
     if (event.type === "message_stop") this.finish();
+  }
+  async complete() {
+    for (const event of this.terminalEvents) {
+      if (this.closed) return;
+      if (this.stream) {
+        if (this.controller.desiredSize <= 0) await new Promise((resolve) => { this.demand = resolve; });
+        if (this.closed) return;
+        this.controller.enqueue(this.utils.sse(event));
+      }
+    }
+    this.finish();
   }
   finish() {
     if (this.closed) return;
     this.closed = true;
-    if (this.stream) this.controller.close();
+    this.demand?.();
+    if (this.stream && !this.canceled) this.controller.close();
     this.ready.resolve();
     this.done.resolve();
   }
   fail(error) {
     if (this.closed) return;
     this.error = error;
-    if (this.stream && this.started) {
+    if (this.stream && this.started && !this.canceled) {
       this.controller.enqueue(this.utils.sse({ type: "error", error: { type: "api_error", message: error.message || String(error) } }));
     }
     this.finish();
@@ -208,7 +240,7 @@ class Turn {
 }
 
 class ToolSession {
-  constructor({ model, body, toolDefs, signal, log, queryFactory, mcpFactory, utils, descriptor }) {
+  constructor({ model, body, toolDefs, signal, log, queryFactory, mcpFactory, utils, descriptor, controls }) {
     this.model = model;
     this.toolDefs = toolDefs;
     this.signature = JSON.stringify(toolDefs);
@@ -218,15 +250,15 @@ class ToolSession {
     this.mcpFactory = mcpFactory;
     this.utils = utils;
     this.descriptor = descriptor;
+    this.controls = controls;
     this.abortController = new AbortController();
     this.ids = new Set();
     this.waiters = new Map();
     this.bufferedResults = new Map();
-    this.dispatched = new Set();
     this.nameMap = new Map(toolDefs.map((tool) => ["mcp__" + SERVER_NAME + "__" + tool.name, tool.externalName]));
     this.waiting = false;
     this.disposed = false;
-    this.rawStreamSeen = false;
+    this.rawMessageIds = new Set();
     this.prompt = buildToolPrompt(body);
   }
   async setup(stream) {
@@ -255,14 +287,15 @@ class ToolSession {
           persistSession: false,
           verbatimPrompts: true,
           abortController: this.abortController,
-          ...(process.env.CLAUDE_CODE_EXECUTABLE ? { pathToClaudeCodeExecutable: process.env.CLAUDE_CODE_EXECUTABLE } : {})
+          ...this.controls,
+          ...(this.queryFactory ? {} : { pathToClaudeCodeExecutable: resolveSdkExecutable() })
         }
       });
       this.startTimer = setTimeout(() => {
         if (this.current && !this.current.started) this.cancel("SDK start timed out");
       }, START_MS);
       this.startTimer.unref?.();
-      void this.consume();
+      void this.consume().catch((error) => this.log?.warn?.("CLAUDE_SDK_TOOLS", error.message));
     } catch (error) {
       this.current?.fail(error);
       this.dispose();
@@ -288,11 +321,11 @@ class ToolSession {
     this.ids.add(id);
     return { ...event, content_block: { ...tool, name: original } };
   }
-  processEvent(raw) {
+  async processEvent(raw) {
     if (!this.current) throw fault("SDK emitted output without an attached HTTP request", 502);
     const event = this.remap(raw);
     const turn = this.current;
-    turn.push(event);
+    await turn.push(event);
     if (event.type === "message_stop") {
       clearTimeout(this.startTimer);
       if (turn.stopReason === "tool_use") {
@@ -302,8 +335,6 @@ class ToolSession {
         this.waitTimer = setTimeout(() => this.cancel("Client tool results timed out"), WAIT_MS);
         this.waitTimer.unref?.();
         this.current = null;
-      } else {
-        this.current = null;
       }
     }
   }
@@ -312,14 +343,16 @@ class ToolSession {
       for await (const msg of this.query) {
         if (this.disposed) return;
         if (msg.type === "stream_event" && !msg.parent_tool_use_id) {
-          this.rawStreamSeen = true;
-          this.processEvent(msg.event);
-        } else if (msg.type === "assistant" && !this.rawStreamSeen && !msg.parent_tool_use_id) {
-          for (const event of this.utils.eventsFromCompletedAssistant(msg, this.model)) this.processEvent(event);
+          if (msg.event.type === "message_start" && msg.event.message?.id) this.rawMessageIds.add(msg.event.message.id);
+          await this.processEvent(msg.event);
+        } else if (msg.type === "assistant" && !this.rawMessageIds.has(msg.message?.id) && !msg.parent_tool_use_id) {
+          for (const event of this.utils.eventsFromCompletedAssistant(msg, this.model)) await this.processEvent(event);
         } else if (msg.type === "result") {
           if (msg.is_error || msg.subtype !== "success") {
             throw fault("Claude Agent SDK failed: " + (msg.errors?.join("; ") || msg.result || msg.subtype), 502);
           }
+          if (!this.current?.terminalEvents.some((event) => event.type === "message_stop")) throw fault("SDK result arrived before a complete assistant message", 502);
+          await this.current.complete();
         }
       }
       if (this.waiting) throw fault("Claude Agent SDK ended while client tool results were pending", 502);
@@ -333,7 +366,6 @@ class ToolSession {
   }
   onToolCall(id) {
     if (this.disposed) throw fault("Tool session is closed", 409);
-    this.dispatched.add(id);
     if (this.bufferedResults.has(id)) {
       const result = this.bufferedResults.get(id);
       this.bufferedResults.delete(id);
@@ -349,7 +381,6 @@ class ToolSession {
     const results = lastResultBlocks(body);
     const submitted = new Map();
     const evidence = priorToolIds(body);
-    if (body.messages.at(-1).content.some((block) => block.type !== "tool_result")) throw fault("Tool-resume turn must contain only tool results", 409);
     for (const block of results) {
       if (typeof block.tool_use_id !== "string" || submitted.has(block.tool_use_id)) throw fault("Missing or duplicate tool_result ID", 409);
       if (!this.ids.has(block.tool_use_id) || !evidence.has(block.tool_use_id)) throw fault("tool_result does not match the outstanding SDK tool_use", 409);
@@ -361,7 +392,6 @@ class ToolSession {
     this.ids.forEach((id) => byToolId.delete(id));
     this.ids.clear();
     this.current = new Turn(this.model, stream, () => this.cancel("client disconnected"), this.utils);
-    this.rawStreamSeen = false;
     this.bindSignal(signal);
     for (const [id, value] of submitted) {
       const waiter = this.waiters.get(id);
@@ -372,9 +402,11 @@ class ToolSession {
   }
   cancel(reason) {
     if (this.disposed) return;
-    this.current?.fail(fault("Claude SDK session canceled: " + reason, 499));
-    this.abortController.abort();
-    this.dispose();
+    try { this.current?.fail(fault("Claude SDK session canceled: " + reason, 499)); }
+    finally {
+      this.abortController.abort();
+      this.dispose();
+    }
   }
   dispose() {
     if (this.disposed) return;
@@ -392,7 +424,7 @@ class ToolSession {
   }
 }
 
-export async function executeSdkToolRequest({ model, body, stream, signal, log, descriptor, queryFactory, mcpFactory, utils }) {
+export async function executeSdkToolRequest({ model, body, stream, signal, log, descriptor, queryFactory, mcpFactory, utils, controls }) {
   const results = lastResultBlocks(body);
   if (results.length) {
     const matched = new Set(results.map((block) => byToolId.get(block.tool_use_id)).filter(Boolean));
@@ -409,7 +441,7 @@ export async function executeSdkToolRequest({ model, body, stream, signal, log, 
   }
   try {
     const toolDefs = normalizeTools(body);
-    const session = new ToolSession({ model, body, toolDefs, stream, signal, log, queryFactory, mcpFactory, utils, descriptor });
+    const session = new ToolSession({ model, body, toolDefs, stream, signal, log, queryFactory, mcpFactory, utils, descriptor, controls });
     sessions.add(session);
     return await session.setup(stream);
   } catch (error) {

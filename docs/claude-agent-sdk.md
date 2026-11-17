@@ -1,48 +1,61 @@
-# Claude Code Agent SDK backend
+# Local Claude Code backend
 
-This fork **replaces** the old `cc/...` Claude provider's direct HTTP/OAuth routing with a **local official Claude Code process** started through `@anthropic-ai/claude-agent-sdk`.
+The existing `claude` provider and `cc/<model-id>` routes now run an unmodified official Claude Code process through `@anthropic-ai/claude-agent-sdk` (pinned to 0.3.321). They no longer use direct subscription OAuth Messages requests or identity-cloaking headers. Other Anthropic-compatible providers are unchanged.
 
 ## Setup
 
-1. Run 9Router on a local machine or a persistent self-hosted Node.js server. This backend is not supported in serverless deployments.
-2. Install the official Claude Code CLI, then run `claude auth login` as the **same operating-system user** running 9Router.
-3. Open **Providers → Claude Code (local SDK)** to inspect login status. The SDK uses its bundled official CLI by default. To force a known installed binary, set `CLAUDE_CODE_EXECUTABLE` to the full path of that executable before starting 9Router.
-4. Use existing `cc/<model-id>` IDs. The `claude` provider is now local and has no 9Router OAuth account/connection rows. Legacy OAuth rows in an existing database are ignored (not silently deleted); remove them separately if desired.
+1. Run 9Router from its app directory on a persistent Node.js host. Serverless and multiple router processes are not supported for this backend.
+2. Open **Providers → Local Providers → Claude Code (local SDK)**. The status card checks the *same executable and isolated environment* used for execution, and shows its exact login command. By default this is the SDK's bundled binary, not an unrelated `claude` in PATH.
+3. Run that command as the router's OS user with the same `HOME` / `CLAUDE_CONFIG_DIR`. `CLAUDE_CODE_EXECUTABLE` can select a different unmodified official binary. Its version must support the pinned SDK's options.
+4. Use the existing `cc/<model-id>` names and normal `/v1/messages`, `/v1/chat/completions`, or streaming `/v1/responses` endpoints.
 
-This provider does not read, store, or refresh Claude Code OAuth credentials. It does not forge headers, alter upstream requests, copy session tokens, or silently fall back to paid API keys. Claude Code cloud MCP servers, auto-memory, auto-compaction, and project context files are disabled on SDK child processes. It fails if `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL`, or cloud-provider selector variables are set. Authentication and billing are owned by Claude Code / Anthropic. Included subscription quota is **not guaranteed**: verify account usage and Anthropic's current rules for this specific setup before use.
+For Docker, run the login command **inside the container as `node`**. Persist that user's Claude configuration directory (normally `/home/node/.claude`) separately from `/app/data` if login must survive container replacement. Do not copy subscription tokens into 9Router's database.
 
-## Compatibility and current limits
+Readiness is a local CLI login check, not proof that a model request will succeed or be included in a subscription. Expired logins, API-key auth, and conflicting environment variables are not labeled ready.
 
-| Feature | Status |
+## Authentication and isolation
+
+Claude Code owns login, token storage, refresh, and billing. The router does not import those credentials. Existing 9Router Claude OAuth rows are retained for explicit user cleanup but ignored by routing, model selection, background refresh, quota auto-ping, and usage checks. Legacy OAuth and limit-reset endpoints return 410.
+
+Local execution refuses `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL`, or enabled Bedrock/Vertex/Foundry selector variables. Remove those conflicts from the **router process**, rather than expecting a silent fallback to API billing. Other providers remain available through their own connections.
+
+Child processes disable built-in tools, filesystem settings, skills, cloud MCP servers, auto-memory, auto-compaction, and project context files. Parent CLI session markers and plugin directories are not inherited. Client tools are exposed through an in-process MCP bridge: the router only hands calls and results between Claude and the client; it does not execute the client tools.
+
+## Compatibility contract
+
+| Feature | Current behavior |
 | --- | --- |
-| Replace direct Claude HTTP/OAuth provider and preserve `cc/` routing | Implemented |
-| Local unmodified Claude Code executable and its own login | Implemented, requires local live acceptance |
-| Single-turn text, Claude Messages JSON, streaming SSE | Implemented, offline tests added |
-| Multi-turn text context | Converted to quoted prior transcript in each request; **not** a native Claude Code session replay |
-| Client-owned tool use and tool results | **In-memory SDK MCP bridge implemented; live acceptance pending.** 9Router returns tool calls and waits for client results without executing them |
-| Images, audio, non-text message content | Rejected with 422 |
-| Temperature, top-p, stop sequences, structured output | Rejected with 422 where supplied |
-| Exact `max_tokens` control | SDK has no equivalent per-query Messages API option. Not enforced by the adapter |
-| Thinking disabled | Rejected; no false translation to low effort |
-| SDK version, model, login compatibility | Local validation required |
-| Hosted/multi-user subscription routing | Not supported |
+| Text, text system blocks, JSON and SSE | Supported |
+| Client tools and results | Sequential and parallel calls continue the **same SDK query**; results are paired by tool-use ID, including out-of-order MCP dispatch |
+| Claude / OpenAI result batches | Consecutive result messages are read as one batch; all outstanding IDs must be provided exactly once |
+| Completed-assistant fallback | Emits normal text and tool-input deltas; late completed copies of streamed messages are ignored |
+| SDK failure / cancellation | JSON errors or SSE error events; final success waits for the SDK result; cancellation aborts and releases the session |
+| Thinking | `disabled`, `adaptive`, or `enabled` with a positive `budget_tokens`, mapped to native SDK options |
+| Effort | `reasoning_effort` or `output_config.effort`: low, medium, high, xhigh, max |
+| Unsupported controls | Sampling, stop sequences, structured output, forced tool choice, metadata and service tier fail with 422, with or without tools |
+| Images/audio/documents and non-text tool results | Unsupported; rejected |
+| Root tool-schema anyOf/oneOf/allOf | Rejected explicitly; nested JSON Schema is preserved |
+| `max_tokens` | Not enforced as an exact Messages API limit |
+| Ordinary conversation history | Quoted transcript on a new query, **not native session replay** |
+| Pending tool session | In memory; expires after 120 seconds waiting for results; cap of 12 active tool sessions |
 
-**Important:** This is *not yet a validated full drop-in Messages API replacement*. Tool use is implemented with an in-memory SDK MCP bridge, but it must pass real Pi/Claude live acceptance before release. After a router restart or 120 seconds without results, the bridge rejects stale results with HTTP 409 instead of replaying a client tool. Multi-turn sessions outside a pending tool call still use quoted history, not native session replay.
+After expiry, router restart, changed model/tool schemas, missing IDs or duplicate results, the bridge returns 409 rather than replaying client tools. Do not retry a side-effecting tool automatically. A successful native session-history implementation (including edited history/forks) is still needed before claiming full Messages API parity.
 
-## Developer acceptance
-
-Run the offline test suite from the project's test setup:
+## Verification
 
 ```sh
-npm install
-# Install Vitest in a clean test-only directory, or use your existing Vitest runner.
-npx --yes vitest@4 run tests/unit/claude-sdk.test.js tests/unit/claude-sdk-tools.test.js
+npm ci
+npm ci --prefix tests
+cd tests
+npx vitest run unit/claude-sdk*.test.js unit/background-token-refresh.test.js unit/quota-auto-ping.test.js
 ```
 
-Then run local live checks: check login, one text JSON turn, one SSE turn, real client tool calls and results (sequential and parallel), repeated turns, restart in a pending tool call, client abort, missing CLI, expired login, conflicting environment variables, and account usage/billing category. Confirm no upstream API key or OAuth token is sent by 9Router. Verify no client tool runs in the 9Router process.
+The tests cover translated parallel results, sequential rounds, completed-message fallback, cancellation, expiry, SDK errors, request controls, readiness and legacy-token isolation. Protocol integration tests use the **real SDK and real MCP transport** with an offline CLI fixture. They require no account and do not establish live model compatibility.
 
-Reference implementation to study for full Pi tool/session parity: [pi-claude-bridge](https://github.com/elidickinson/pi-claude-bridge) (especially `src/mcp-server.ts`, `src/session-sync.ts`, `src/index.ts`). Reproducing those semantics in a stateless HTTP router needs careful state and timeout handling.
+CI also builds the standalone server and checks the packaged native binary and missing-login behavior. Builds/tests must use a temporary `DATA_DIR` (and an isolated `HOME` for live CLI checks); never point acceptance runs at production data.
 
-## Policy note
+Before release, complete real local acceptance with your own login: one JSON request, SSE, sequential/parallel client tools, repeated turns, abort, slow reader, expiry/restart, and account usage/billing category. No successful live subscription run is claimed by offline tests.
 
-Anthropic's documentation draws a distinction between users of the unmodified Claude Code CLI and third-party products routing subscription credentials. Local technical success does not prove terms approval or subscription billing. See [Anthropic legal guidance](https://code.claude.com/docs/en/legal-and-compliance).
+## Policy and billing
+
+An official SDK and unmodified binary do not by themselves establish permission or billing treatment for a particular router deployment. Anthropic distinguishes an end user signing into their own unmodified binary from third-party subscription routing on users' behalf. See [authentication and credential guidance](https://code.claude.com/docs/en/legal-and-compliance#authentication-and-credential-use). Hosted/shared-subscription routing is outside this feature's scope.

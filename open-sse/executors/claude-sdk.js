@@ -1,10 +1,9 @@
 import { BaseExecutor } from "./base.js";
-import { sdkRuntimeOptions } from "./claude-sdk-runtime.js";
+import { sdkRuntimeOptions, guardSdkEnvironment, resolveSdkExecutable } from "./claude-sdk-runtime.js";
 import { executeSdkToolRequest, hasSdkToolBoundary } from "./claude-sdk-tools.js";
 
 const SDK_URL = "claude-agent-sdk://local";
 const MAX_CONTEXT_CHARS = 2_000_000;
-const ENV_CONFLICTS = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY"];
 const ENCODER = new TextEncoder();
 
 function invalid(message, status = 422) {
@@ -35,9 +34,6 @@ export function buildSdkInput(body) {
   if (body.tool_choice && body.tool_choice.type !== "auto" && body.tool_choice !== "auto") {
     throw invalid("tool_choice is not supported by the Claude Agent SDK adapter");
   }
-  for (const key of ["temperature", "top_p", "top_k", "stop_sequences", "output_config", "metadata", "service_tier"]) {
-    if (body[key] != null) throw invalid(key + " cannot be mapped faithfully to Claude Agent SDK");
-  }
   let system = "";
   if (body.system != null) {
     const parts = Array.isArray(body.system) ? body.system : [body.system];
@@ -65,17 +61,7 @@ export function buildSdkInput(body) {
     throw invalid("Claude Agent SDK prompt exceeds the router's 2 million character limit", 413);
   }
   if (!latest.trim()) throw invalid("Last user message has no text", 400);
-  if (body.thinking?.type === "disabled") {
-    throw invalid("thinking.type=disabled cannot be mapped faithfully to the Claude Agent SDK");
-  }
-  let effort;
-  if (body.thinking?.type === "enabled") effort = "high";
-  if (body.reasoning_effort && !effort) {
-    const allowed = ["low", "medium", "high", "xhigh", "max"];
-    if (!allowed.includes(body.reasoning_effort)) throw invalid("Unsupported reasoning_effort");
-    effort = body.reasoning_effort;
-  }
-  return { prompt, systemPrompt: system, effort };
+  return { prompt, systemPrompt: system, ...buildSdkControls(body) };
 }
 
 function errorResponse(error) {
@@ -136,6 +122,10 @@ export function eventsFromCompletedAssistant(message, model) {
     events.push({ type: "content_block_start", index, content_block: { ...block, ...(block.type === "text" ? { text: "" } : {}), ...(block.type === "thinking" ? { thinking: "" } : {}) } });
     if (block.type === "text" && block.text) events.push({ type: "content_block_delta", index, delta: { type: "text_delta", text: block.text } });
     if (block.type === "thinking" && block.thinking) events.push({ type: "content_block_delta", index, delta: { type: "thinking_delta", thinking: block.thinking } });
+    if (block.type === "tool_use") {
+      events[events.length - 1].content_block.input = {};
+      events.push({ type: "content_block_delta", index, delta: { type: "input_json_delta", partial_json: JSON.stringify(block.input || {}) } });
+    }
     events.push({ type: "content_block_stop", index });
   });
   events.push({ type: "message_delta", delta: { stop_reason: m.stop_reason || "end_turn" }, usage: m.usage || {} });
@@ -147,9 +137,30 @@ function sse(event) {
   return ENCODER.encode("event: " + event.type + "\ndata: " + JSON.stringify(event) + "\n\n");
 }
 
-function guardEnvironment(env) {
-  const present = ENV_CONFLICTS.filter((key) => typeof env[key] === "string" && env[key] !== "" && env[key] !== "0" && env[key] !== "false");
-  if (present.length) throw invalid("Claude Code subscription mode cannot run with " + present.join(", ") + " set. Remove the conflicting environment values to prevent accidental API/other billing.", 409);
+export function buildSdkControls(body) {
+  if (!body || typeof body !== "object") throw invalid("Request body must be an object", 400);
+  if (body.tools != null && !Array.isArray(body.tools)) throw invalid("tools must be an array");
+  for (const key of ["temperature", "top_p", "top_k", "stop_sequences", "stop", "response_format", "metadata", "service_tier", "output_format"]) {
+    if (body?.[key] != null) throw invalid(key + " is not supported by the local Claude SDK adapter");
+  }
+  if (body?.tool_choice != null && body.tool_choice !== "auto" && body.tool_choice?.type !== "auto") {
+    throw invalid("Only tool_choice=auto is supported by the local Claude SDK adapter");
+  }
+  if (body?.output_config && Object.keys(body.output_config).some((key) => key !== "effort")) {
+    throw invalid("Only output_config.effort is supported by the local Claude SDK adapter");
+  }
+  const effort = body?.output_config?.effort ?? body?.reasoning_effort;
+  if (effort != null && !["low", "medium", "high", "xhigh", "max"].includes(effort)) throw invalid("Unsupported reasoning effort");
+  const controls = effort == null ? {} : { effort };
+  if (body?.thinking != null) {
+    const { type, budget_tokens } = body.thinking;
+    if (!["disabled", "enabled", "adaptive"].includes(type)) throw invalid("Unsupported thinking.type");
+    if (type === "enabled") {
+      if (!Number.isInteger(budget_tokens) || budget_tokens <= 0) throw invalid("thinking.budget_tokens must be a positive integer");
+      controls.thinking = { type, budgetTokens: budget_tokens };
+    } else controls.thinking = { type };
+  }
+  return controls;
 }
 
 function sdkError(message) {
@@ -171,10 +182,11 @@ export class ClaudeSdkExecutor extends BaseExecutor {
     const descriptor = { url: SDK_URL, headers: {}, transformedBody: { model, backend: "claude-agent-sdk", messageCount: body?.messages?.length || 0 } };
     let input;
     try {
-      guardEnvironment(process.env);
+      guardSdkEnvironment();
+      const controls = buildSdkControls(body);
       if (hasSdkToolBoundary(body)) {
         return await executeSdkToolRequest({
-          model, body, stream, signal, log, descriptor,
+          model, body, stream, signal, log, descriptor, controls,
           queryFactory: this.queryFactory,
           mcpFactory: this.mcpFactory,
           utils: { errorResponse, sse, accumulateSdkEvent, finalMessage, makeState, eventsFromCompletedAssistant }
@@ -208,9 +220,9 @@ export class ClaudeSdkExecutor extends BaseExecutor {
           skills: [],
           persistSession: false,
           verbatimPrompts: true,
-          ...(process.env.CLAUDE_CODE_EXECUTABLE ? { pathToClaudeCodeExecutable: process.env.CLAUDE_CODE_EXECUTABLE } : {}),
+          ...(this.queryFactory ? {} : { pathToClaudeCodeExecutable: resolveSdkExecutable() }),
           abortController,
-          ...(input.effort ? { effort: input.effort } : {})
+          ...buildSdkControls(body)
         }
       });
       // Do not stream an HTTP 200 before the SDK has actually started.
@@ -229,6 +241,7 @@ export class ClaudeSdkExecutor extends BaseExecutor {
         try {
           const state = makeState(model);
           let received = false;
+          let succeeded = false;
           for await (const message of all()) {
             if (message.type === "stream_event" && !message.parent_tool_use_id) {
               accumulateSdkEvent(state, message.event);
@@ -238,11 +251,12 @@ export class ClaudeSdkExecutor extends BaseExecutor {
                 accumulateSdkEvent(state, event);
                 if (event.type === "message_start") received = true;
               }
-            } else if (message.type === "result" && (message.is_error || message.subtype !== "success")) {
-              throw sdkError(message);
+            } else if (message.type === "result") {
+              if (message.is_error || message.subtype !== "success") throw sdkError(message);
+              succeeded = true;
             }
           }
-          if (!received) throw invalid("Claude Agent SDK did not return an assistant response", 502);
+          if (!received || !succeeded) throw invalid("Claude Agent SDK did not complete an assistant response", 502);
           return { ...descriptor, response: new Response(JSON.stringify(finalMessage(state, model)), {
             headers: { "content-type": "application/json" }
           }) };
@@ -250,38 +264,59 @@ export class ClaudeSdkExecutor extends BaseExecutor {
           return { ...descriptor, response: errorResponse(e) };
         } finally {
           signal?.removeEventListener("abort", abort);
+          sdkQuery?.close?.();
         }
       }
+      let canceled = false;
+      let demand;
       const response = new Response(new ReadableStream({
         async start(controller) {
           try {
             let received = false;
+            let succeeded = false;
+            const terminal = [];
+            const emit = (event) => {
+              if (event.type === "message_delta" || event.type === "message_stop") terminal.push(event);
+              else controller.enqueue(sse(event));
+            };
             for await (const message of all()) {
+              if (canceled) break;
+              if (controller.desiredSize <= 0) await new Promise((resolve) => { demand = resolve; });
+              if (canceled) break;
               if (message.type === "stream_event" && !message.parent_tool_use_id) {
                 if (message.event.type === "message_start") received = true;
-                controller.enqueue(sse(message.event));
+                emit(message.event);
               } else if (message.type === "assistant" && !received && !message.parent_tool_use_id) {
                 for (const event of eventsFromCompletedAssistant(message, model)) {
                   if (event.type === "message_start") received = true;
-                  controller.enqueue(sse(event));
+                  emit(event);
                 }
-              } else if (message.type === "result" && (message.is_error || message.subtype !== "success")) {
-                throw sdkError(message);
+              } else if (message.type === "result") {
+                if (message.is_error || message.subtype !== "success") throw sdkError(message);
+                succeeded = true;
               }
             }
-            if (!received) throw invalid("Claude Agent SDK did not return an assistant response", 502);
+            if (!canceled) {
+              if (!received || !succeeded) throw invalid("Claude Agent SDK did not complete an assistant response", 502);
+              for (const event of terminal) controller.enqueue(sse(event));
+            }
           } catch (e) {
-            if (!abortController.signal.aborted) {
+            if (!canceled && !abortController.signal.aborted) {
               log?.warn?.("CLAUDE_SDK", e.message || String(e));
               controller.enqueue(sse({ type: "error", error: { type: "api_error", message: e.message || String(e) } }));
             }
           } finally {
             signal?.removeEventListener("abort", abort);
-            controller.close();
+            sdkQuery?.close?.();
+            if (!canceled) controller.close();
           }
         },
+        pull() { demand?.(); demand = null; },
         cancel() {
+          canceled = true;
+          demand?.();
           abort();
+          sdkQuery?.close?.();
           signal?.removeEventListener("abort", abort);
         }
       }), { headers: { "content-type": "text/event-stream", "cache-control": "no-cache" } });

@@ -23,8 +23,8 @@ export default function ClaudeSdkStatusCard() {
       <p className="text-sm text-text-muted mb-2">
         9Router uses Claude Code's own login and executable. It does not import or store subscription OAuth credentials.
       </p>
-      <code className="block text-sm p-2 rounded bg-black/5 dark:bg-white/5">claude auth login</code>
-      <p className="text-xs text-text-muted mt-2">Install Claude Code and run this command as the same OS user that runs 9Router.</p>
+      <code className="block text-sm p-2 rounded bg-black/5 dark:bg-white/5 break-all">{status?.loginCommand || "claude auth login"}</code>
+      <p className="text-xs text-text-muted mt-2">Run this command as the same OS user, with the same HOME, that runs 9Router. It uses the exact executable selected by the SDK.</p>
       {status?.version && <p className="text-xs mt-2">Claude Code: {status.version}</p>}
       {status?.reason && <p className="text-xs text-red-500 mt-2">{status.reason}</p>}
       <p className="text-xs text-text-muted mt-2">This backend requires local Node.js processes. It is not supported on serverless hosts. Anthropic determines the usage and billing category.</p>

@@ -11,10 +11,16 @@ const SETTINGS_RESPONSE_HEADERS = {
   "Cache-Control": "no-store"
 };
 
+// Secrets must never be mass-assigned from request body (CWE-915)
+const PROTECTED_SETTING_KEYS = ["password", "mitmSudoEncrypted", "forkExtensions", "viewerPortal"];
+
 export async function GET() {
   try {
     const settings = await getSettings();
-    const { password, ...safeSettings } = settings;
+    const { password, oidcClientSecret, ...safeSettings } = settings;
+    delete safeSettings.forkExtensions;
+    delete safeSettings.viewerPortal;
+    safeSettings.oidcConfigured = !!(safeSettings.oidcIssuerUrl && safeSettings.oidcClientId && oidcClientSecret);
     
     const enableRequestLogs = process.env.ENABLE_REQUEST_LOGS === "true";
     const enableTranslator = process.env.ENABLE_TRANSLATOR === "true";
@@ -34,6 +40,9 @@ export async function GET() {
 export async function PATCH(request) {
   try {
     const body = await request.json();
+
+    // Strip protected secrets before any internal handling sets them
+    for (const key of PROTECTED_SETTING_KEYS) delete body[key];
 
     // If updating password, hash it
     if (body.newPassword) {
@@ -63,6 +72,12 @@ export async function PATCH(request) {
       delete body.currentPassword;
     }
 
+    if (Object.prototype.hasOwnProperty.call(body, "oidcClientSecret")) {
+      if (!body.oidcClientSecret || !String(body.oidcClientSecret).trim()) {
+        delete body.oidcClientSecret;
+      }
+    }
+
     const settings = await updateSettings(body);
 
     // Apply outbound proxy settings immediately (no restart required)
@@ -83,7 +98,22 @@ export async function PATCH(request) {
       resetComboRotation();
     }
 
-    const { password, ...safeSettings } = settings;
+    if (
+      Object.prototype.hasOwnProperty.call(body, "claudeAutoPing") ||
+      Object.prototype.hasOwnProperty.call(body, "codexAutoPing")
+    ) {
+      // Keep the scheduler absent when no account opted in; load its provider graph only on demand.
+      import("@/shared/services/quotaAutoPing")
+        .then(({ configureQuotaAutoPing }) => {
+          configureQuotaAutoPing(settings);
+        })
+        .catch((error) => console.warn("[AutoPing] settings update failed:", error.message));
+    }
+
+    const { password, oidcClientSecret, ...safeSettings } = settings;
+    delete safeSettings.forkExtensions;
+    delete safeSettings.viewerPortal;
+    safeSettings.oidcConfigured = !!(safeSettings.oidcIssuerUrl && safeSettings.oidcClientId && oidcClientSecret);
     return NextResponse.json(safeSettings, { headers: SETTINGS_RESPONSE_HEADERS });
   } catch (error) {
     console.log("Error updating settings:", error);

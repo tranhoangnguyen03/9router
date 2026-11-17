@@ -9,13 +9,13 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { convertCommandCodeToOpenAI } from "../../open-sse/translator/response/commandcode-to-openai.js";
+import { commandCodeToOpenAIResponse } from "../../open-sse/translator/response/commandcode-to-openai.js";
 
 function feed(events) {
   const state = {};
   const all = [];
   for (const e of events) {
-    const out = convertCommandCodeToOpenAI(JSON.stringify(e), state);
+    const out = commandCodeToOpenAIResponse(JSON.stringify(e), state);
     if (out) for (const c of out) all.push(c);
   }
   return { state, chunks: all };
@@ -113,15 +113,40 @@ describe("commandcode-to-openai — finish", () => {
     const last = chunks[chunks.length - 1];
     expect(last.usage).toEqual({ prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 });
   });
+
+  it("extracts cache details when inputTokenDetails is provided", () => {
+    const { chunks } = feed([
+      { type: "text-delta", text: "hi cached" },
+      {
+        type: "finish",
+        totalUsage: {
+          inputTokens: 100,
+          outputTokens: 20,
+          inputTokenDetails: { cacheReadTokens: 80, cacheWriteTokens: 10 },
+        },
+      },
+    ]);
+    const last = chunks[chunks.length - 1];
+    expect(last.usage.prompt_tokens).toBe(100);
+    expect(last.usage.completion_tokens).toBe(20);
+    expect(last.usage.prompt_tokens_details).toEqual({
+      cached_tokens: 80,
+      cache_creation_tokens: 10,
+    });
+  });
 });
 
 describe("commandcode-to-openai — error event", () => {
+  // Since 092c84ea an error event throws (so the stream is marked errored and can be
+  // retried) instead of being emitted as fake content with finish_reason "stop".
   it("stringifies object errors so client sees readable message", () => {
-    const { chunks } = feed([
-      { type: "error", error: { type: "server_error", message: "Boom" } },
-    ]);
-    const text = chunks[0].choices[0].delta.content;
-    expect(text).toContain("Boom");
-    expect(text).not.toContain("[object Object]");
+    let message = "";
+    try {
+      feed([{ type: "error", error: { type: "server_error", message: "Boom" } }]);
+    } catch (err) {
+      message = err.message;
+    }
+    expect(message).toContain("Boom");
+    expect(message).not.toContain("[object Object]");
   });
 });

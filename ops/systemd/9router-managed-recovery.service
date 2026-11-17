@@ -1,0 +1,11 @@
+[Unit]
+Description=Recover or reconcile managed 9router deployment
+After=docker.service network-online.target 9router.service
+Wants=docker.service network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/9router/bin/9routerctl recover
+
+[Install]
+WantedBy=multi-user.target
