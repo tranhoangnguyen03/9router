@@ -3,6 +3,8 @@
 const { createInterface } = require("node:readline");
 const { randomUUID } = require("node:crypto");
 const send = (message) => process.stdout.write(JSON.stringify(message) + "\n");
+if (process.argv.includes("--version")) { console.log("Offline Claude Code fixture"); process.exit(0); }
+if (process.argv.includes("status")) { console.log('{"loggedIn":false,"authMethod":"none"}'); process.exit(1); }
 const session_id = randomUUID();
 let expected = 0;
 const results = new Map();
@@ -11,7 +13,8 @@ function assistant(content, stop_reason) {
   const event = (event) => send({ type: "stream_event", event, parent_tool_use_id: null, session_id, uuid: randomUUID() });
   event({ type: "message_start", message: { ...message, content: [] } });
   content.forEach((block, index) => {
-    event({ type: "content_block_start", index, content_block: block });
+    event({ type: "content_block_start", index, content_block: { ...block, ...(block.type === "text" ? { text: "" } : { input: {} }) } });
+    event({ type: "content_block_delta", index, delta: block.type === "text" ? { type: "text_delta", text: block.text } : { type: "input_json_delta", partial_json: JSON.stringify(block.input) } });
     event({ type: "content_block_stop", index });
   });
   event({ type: "message_delta", delta: { stop_reason }, usage: { output_tokens: 1 } });

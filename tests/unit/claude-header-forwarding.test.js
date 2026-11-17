@@ -72,11 +72,12 @@ describe("DefaultExecutor.buildHeaders() — claude provider", () => {
     expect(headers["Authorization"]).toBeUndefined();
   });
 
-  it("does not authorize local SDK transport with a legacy OAuth token", () => {
-    const executor = new DefaultExecutor("claude");
-    const headers = executor.buildHeaders({ accessToken: "tok-abc" }, true);
-    expect(headers["Authorization"]).toBeUndefined();
-    expect(headers["x-api-key"]).toBeUndefined();
+  it("routes local Claude through the SDK instead of the HTTP header builder", async () => {
+    const { getExecutor } = await import("open-sse/executors/index.js");
+    const executor = getExecutor("claude");
+    expect(executor.constructor.name).toBe("ClaudeSdkExecutor");
+    expect(executor.noAuth).toBe(true);
+    expect(executor.getBaseUrls()).toEqual(["claude-agent-sdk://local"]);
   });
 
   it("includes Accept: text/event-stream when stream=true", () => {
