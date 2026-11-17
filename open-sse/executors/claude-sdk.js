@@ -43,7 +43,10 @@ export function buildSdkInput(body) {
   for (let i = 0; i < body.messages.length; i++) {
     const m = body.messages[i];
     if (m.role !== "user" && m.role !== "assistant") throw invalid("Unsupported conversation role: " + String(m.role));
-    history.push({ role: m.role, text: textOf(m.content, "messages[" + i + "].content") });
+    // Prior thinking signatures belong to their original query, not a quoted replay.
+    const content = m.role === "assistant" && Array.isArray(m.content)
+      ? m.content.filter((block) => !["thinking", "redacted_thinking"].includes(block?.type)) : m.content;
+    history.push({ role: m.role, text: textOf(content, "messages[" + i + "].content") });
   }
   if (history[history.length - 1].role !== "user") {
     throw invalid("The last message must come from the user; assistant prefill is not supported");
@@ -85,6 +88,7 @@ export function accumulateSdkEvent(state, event) {
     if (!block) throw invalid("SDK stream contains a delta before content_block_start", 502);
     if (event.delta?.type === "text_delta") block.text = (block.text || "") + (event.delta.text || "");
     else if (event.delta?.type === "thinking_delta") block.thinking = (block.thinking || "") + (event.delta.thinking || "");
+    else if (event.delta?.type === "signature_delta") block.signature = (block.signature || "") + (event.delta.signature || "");
     else if (event.delta?.type === "input_json_delta") block._partial = (block._partial || "") + (event.delta.partial_json || "");
   } else if (event.type === "message_delta") {
     state.stopReason = event.delta?.stop_reason || state.stopReason;

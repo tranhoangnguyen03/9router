@@ -90,6 +90,7 @@ function inputText(blocks, label) {
   if (typeof blocks === "string") return blocks;
   if (!Array.isArray(blocks)) throw fault(label + " must be a string or content blocks");
   return blocks.map((block) => {
+    if (label === "History" && ["thinking", "redacted_thinking"].includes(block?.type)) return "";
     if (!block || !["text", "tool_use", "tool_result"].includes(block.type)) {
       throw fault(label + " contains unsupported content");
     }

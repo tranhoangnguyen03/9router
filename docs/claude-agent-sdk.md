@@ -36,7 +36,7 @@ Child processes disable built-in tools, filesystem settings, skills, cloud MCP s
 | Images/audio/documents and non-text tool results | Unsupported; rejected |
 | Root tool-schema anyOf/oneOf/allOf | Rejected explicitly; nested JSON Schema is preserved |
 | `max_tokens` | Not enforced as an exact Messages API limit |
-| Ordinary conversation history | Quoted transcript on a new query, **not native session replay** |
+| Ordinary conversation history | Quoted transcript on a new query, **not native session replay**; prior thinking/signature blocks are omitted, not replayed |
 | Pending tool session | In memory; expires after 120 seconds waiting for results; cap of 12 active tool sessions |
 
 After expiry, router restart, changed model/tool schemas, missing IDs or duplicate results, the bridge returns 409 rather than replaying client tools. Do not retry a side-effecting tool automatically. A successful native session-history implementation (including edited history/forks) is still needed before claiming full Messages API parity.

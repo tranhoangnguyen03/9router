@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ClaudeSdkExecutor, eventsFromCompletedAssistant } from "../../open-sse/executors/claude-sdk.js";
+import { ClaudeSdkExecutor, eventsFromCompletedAssistant, accumulateSdkEvent } from "../../open-sse/executors/claude-sdk.js";
 import { closeAllSdkToolSessions, getActiveSdkToolSessionCount } from "../../open-sse/executors/claude-sdk-tools.js";
 import { translateRequest, translateResponse, initState } from "../../open-sse/translator/index.js";
 
@@ -46,6 +46,48 @@ function appendResults(body, reply) {
 afterEach(() => { closeAllSdkToolSessions(); vi.useRealTimers(); vi.unstubAllEnvs(); });
 
 describe("Claude SDK review regressions", () => {
+  it.each([false, true])("respects a slow stream reader and cancels promptly (tools=%s)", async (withTools) => {
+    let produced = 0;
+    let options;
+    const factory = (args) => {
+      options = args.options;
+      return (async function* () {
+        for (const event of eventsFromCompletedAssistant(assistant([{ type: "text", text: "hello" }]), "claude-test")) {
+          produced++;
+          yield frame(event);
+        }
+        yield { type: "result", subtype: "success" };
+      })();
+    };
+    const f = bridge({ rounds: 0 });
+    const body = initial();
+    if (!withTools) delete body.tools;
+    const response = await execute(new ClaudeSdkExecutor(factory, f.mcpFactory), body, true);
+    await new Promise((done) => setTimeout(done, 20));
+    expect(produced).toBeLessThanOrEqual(2);
+    await response.body.cancel();
+    expect(options.abortController.signal.aborted).toBe(true);
+    await vi.waitFor(() => expect(getActiveSdkToolSessionCount()).toBe(0));
+  });
+
+  it.each([false, true])("accepts follow-ups after thinking without replaying signatures (tools=%s)", async (withTools) => {
+    const f = bridge({ rounds: 0 });
+    const body = initial();
+    if (!withTools) delete body.tools;
+    body.messages = [{ role: "user", content: "First" }, { role: "assistant", content: [{ type: "thinking", thinking: "private reasoning", signature: "PRIVATE_SIGNATURE" }, { type: "text", text: "Answer" }] }, { role: "user", content: "Follow-up" }];
+    expect((await execute(new ClaudeSdkExecutor(f.queryFactory, f.mcpFactory), body)).status).toBe(200);
+    expect(f.requests[0].prompt).toContain("Answer");
+    expect(f.requests[0].prompt).not.toContain("PRIVATE_SIGNATURE");
+  });
+
+  it("preserves native thinking signatures in JSON accumulation", () => {
+    const state = { blocks: new Map() };
+    accumulateSdkEvent(state, { type: "content_block_start", index: 0, content_block: { type: "thinking", thinking: "", signature: "" } });
+    accumulateSdkEvent(state, { type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: "reason" } });
+    accumulateSdkEvent(state, { type: "content_block_delta", index: 0, delta: { type: "signature_delta", signature: "sig" } });
+    expect(state.blocks.get(0)).toEqual({ type: "thinking", thinking: "reason", signature: "sig" });
+  });
+
   it.each([false, true])("resumes sequential and parallel calls in one query (fallback=%s)", async (fallback) => {
     const f = bridge({ ids: ["toolu_1", "toolu_2"], rounds: 2, fallback });
     const executor = new ClaudeSdkExecutor(f.queryFactory, f.mcpFactory);
