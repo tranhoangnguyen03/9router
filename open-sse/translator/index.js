@@ -100,6 +100,7 @@ export function translateRequest(sourceFormat, targetFormat, model, body, stream
 
   const translationOptions = {
     preserveCacheControl: targetFormat === FORMATS.OPENAI && !!PROVIDERS[provider]?.quirks?.preserveCacheControl,
+    localClaudeSdk: provider === "claude",
   };
 
   // If same format, skip translation steps
@@ -125,7 +126,7 @@ export function translateRequest(sourceFormat, targetFormat, model, body, stream
       if (targetFormat !== FORMATS.OPENAI) {
         const fromOpenAI = requestRegistry.get(`${FORMATS.OPENAI}:${targetFormat}`);
         if (fromOpenAI) {
-          result = fromOpenAI(model, result, stream, credentials);
+          result = fromOpenAI(model, result, stream, credentials, translationOptions);
         }
       }
     }
@@ -149,7 +150,7 @@ export function translateRequest(sourceFormat, targetFormat, model, body, stream
   }
 
   // Final step: prepare request for Claude format endpoints
-  if (targetFormat === FORMATS.CLAUDE) {
+  if (targetFormat === FORMATS.CLAUDE && provider !== "claude") {
     const apiKey = credentials?.accessToken || credentials?.apiKey || null;
     result = prepareClaudeRequest(result, provider, apiKey, connectionId, credentials?.rawHeaders, clientSessionId);
     if (Array.isArray(result?.messages)) result.messages = ensureTrailingUserTurn(result.messages, clientLastRole);

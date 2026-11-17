@@ -84,6 +84,7 @@ function buildRefreshBody(profile, config, refreshToken) {
 
 export async function refreshAccessToken(provider, refreshToken, credentials, log) {
   const config = PROVIDERS[provider];
+  if (config?.noAuth) return null;
   const profile = REFRESH_PROFILES[provider] || {};
   const url = resolveRefreshUrl(provider, config, profile);
 

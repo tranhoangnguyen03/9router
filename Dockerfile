@@ -52,6 +52,8 @@ COPY --from=builder /app/node_modules/node-machine-id ./node_modules/node-machin
 COPY --from=builder /app/node_modules/wreq-js ./node_modules/wreq-js
 COPY --from=builder /app/node_modules/@wreq-js ./node_modules/@wreq-js
 COPY --from=builder /app/node_modules/playwright-core ./node_modules/playwright-core
+# The SDK starts a native CLI; dynamic resolution escapes file tracing.
+COPY --from=builder /app/node_modules/@anthropic-ai ./node_modules/@anthropic-ai
 
 RUN mkdir -p /app/data && chown node:node /app/data
 

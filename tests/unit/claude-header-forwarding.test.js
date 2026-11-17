@@ -21,7 +21,7 @@ describe("DefaultExecutor.buildHeaders() — claude provider", () => {
     DefaultExecutor = mod.DefaultExecutor || mod.default;
   });
 
-  it("uses static provider defaults when no model is given", () => {
+  it("does not retain a forged static CLI identity for the local SDK provider", () => {
     const executor = new DefaultExecutor("claude");
     const headers = executor.buildHeaders({ apiKey: "sk-test" }, true);
 
@@ -29,7 +29,7 @@ describe("DefaultExecutor.buildHeaders() — claude provider", () => {
       headers["Anthropic-Version"] === "2023-06-01" ||
       headers["anthropic-version"] === "2023-06-01";
     expect(hasVersion).toBe(true);
-    expect(headers["User-Agent"]).toBe("claude-cli/2.1.322 (external, sdk-cli)");
+    expect(headers["User-Agent"]).toBeUndefined();
   });
 
   it("includes heavy-agent beta flags for claude-opus-5", () => {
@@ -72,11 +72,12 @@ describe("DefaultExecutor.buildHeaders() — claude provider", () => {
     expect(headers["Authorization"]).toBeUndefined();
   });
 
-  it("sets Bearer Authorization when only accessToken is provided", () => {
-    const executor = new DefaultExecutor("claude");
-    const headers = executor.buildHeaders({ accessToken: "tok-abc" }, true);
-    expect(headers["Authorization"]).toBe("Bearer tok-abc");
-    expect(headers["x-api-key"]).toBeUndefined();
+  it("routes local Claude through the SDK instead of the HTTP header builder", async () => {
+    const { getExecutor } = await import("open-sse/executors/index.js");
+    const executor = getExecutor("claude");
+    expect(executor.constructor.name).toBe("ClaudeSdkExecutor");
+    expect(executor.noAuth).toBe(true);
+    expect(executor.getBaseUrls()).toEqual(["claude-agent-sdk://local"]);
   });
 
   it("includes Accept: text/event-stream when stream=true", () => {

@@ -1,0 +1,57 @@
+name: Claude Agent SDK adapter
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  offline-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      DATA_DIR: /tmp/9router-sdk-data
+      DISABLE_BACKGROUND_TOKEN_REFRESH: "1"
+      NEXT_TELEMETRY_DISABLED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - name: Install locked app and test dependencies
+        run: npm ci --no-audit --no-fund && npm ci --prefix tests --no-audit --no-fund
+      - name: SDK adapter and routing regressions
+        working-directory: tests
+        run: npx vitest run unit/claude-sdk*.test.js unit/background-token-refresh.test.js unit/quota-auto-ping.test.js unit/standalone-assets.test.js --reporter=verbose
+      - name: Existing Claude request translator tests
+        working-directory: tests
+        # The response-side empty Read.pages test is a catalogued master failure.
+        run: npx vitest run unit/openai-to-claude.test.js -t openaiToClaudeRequest --reporter=verbose
+      - name: Build Next.js standalone server
+        run: npm run build
+      - name: Compiled HTTP tool handoff (offline CLI, real SDK and MCP)
+        run: node scripts/check-claude-sdk-standalone.mjs
+      - name: Verify standalone SDK binary and missing-login handling
+        working-directory: .next/standalone
+        env:
+          HOME: ${{ runner.temp }}/9router-sdk-home
+        run: |
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import { createRequire } from 'node:module';
+          import { execFileSync } from 'node:child_process';
+          const require = createRequire(process.cwd() + '/package.json');
+          const binary = require.resolve('@anthropic-ai/claude-agent-sdk-linux-x64/claude');
+          assert.match(execFileSync(binary, ['--version'], { encoding: 'utf8' }), /Claude Code/);
+          const { query } = await import('@anthropic-ai/claude-agent-sdk');
+          const controller = new AbortController();
+          const timer = setTimeout(() => controller.abort(), 30000);
+          let failed = false;
+          try {
+            for await (const message of query({ prompt: 'Offline missing-login check', options: { abortController: controller, tools: [], settingSources: [], persistSession: false, pathToClaudeCodeExecutable: binary } })) {
+              if (message.type === 'result') failed = message.is_error === true;
+            }
+          } catch { failed = true; }
+          finally { clearTimeout(timer); }
+          assert(failed, 'An empty HOME must never authenticate or silently use API billing');
+          NODE

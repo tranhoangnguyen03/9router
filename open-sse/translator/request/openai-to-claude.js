@@ -13,7 +13,7 @@ import { getCapabilitiesForModel } from "../../providers/capabilities.js";
 const CLAUDE_OAUTH_TOOL_PREFIX = "";
 
 // Convert OpenAI request to Claude format
-export function openaiToClaudeRequest(model, body, stream) {
+export function openaiToClaudeRequest(model, body, stream, credentials, options = {}) {
   // Tool name mapping for Claude OAuth (capitalizedName → originalName)
   const toolNameMap = new Map();
   // Cap max_tokens at the model's real output ceiling (e.g. Opus 4.8 = 128000),
@@ -129,17 +129,14 @@ Respond ONLY with the JSON object, no other text.`);
     }
   }
 
-  // System with Claude Code prompt and cache_control
-  const claudeCodePrompt = { type: CLAUDE_BLOCK.TEXT, text: CLAUDE_SYSTEM_PROMPT };
-
-  if (systemParts.length > 0) {
-    const systemText = systemParts.join("\n");
-    result.system = [
-      claudeCodePrompt,
-      { type: CLAUDE_BLOCK.TEXT, text: systemText, cache_control: { type: "ephemeral", ttl: "1h" } }
-    ];
+  if (options.localClaudeSdk) {
+    // The official CLI owns its identity; forward only the client's system text.
+    result.system = systemParts.length ? [{ type: CLAUDE_BLOCK.TEXT, text: systemParts.join("\n") }] : [];
   } else {
-    result.system = [claudeCodePrompt];
+    const claudeCodePrompt = { type: CLAUDE_BLOCK.TEXT, text: CLAUDE_SYSTEM_PROMPT };
+    result.system = systemParts.length
+      ? [claudeCodePrompt, { type: CLAUDE_BLOCK.TEXT, text: systemParts.join("\n"), cache_control: { type: "ephemeral", ttl: "1h" } }]
+      : [claudeCodePrompt];
   }
 
   // Tools - convert from OpenAI format to Claude format with prefix for OAuth

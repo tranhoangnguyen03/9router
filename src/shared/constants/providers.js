@@ -44,6 +44,7 @@ const byCategory = (cat) => Object.fromEntries(
   REGISTRY.filter(r => r.category === cat).map(r => [r.id, buildProviderEntry(r)])
 );
 
+export const LOCAL_PROVIDERS = byCategory("local");
 export const FREE_PROVIDERS = byCategory("free");
 export const FREE_TIER_PROVIDERS = byCategory("freeTier");
 
@@ -101,7 +102,7 @@ export function isCustomEmbeddingProvider(providerId) {
 }
 
 // All providers (combined)
-export const AI_PROVIDERS = { ...FREE_PROVIDERS, ...FREE_TIER_PROVIDERS, ...OAUTH_PROVIDERS, ...APIKEY_PROVIDERS, ...WEB_COOKIE_PROVIDERS };
+export const AI_PROVIDERS = { ...LOCAL_PROVIDERS, ...FREE_PROVIDERS, ...FREE_TIER_PROVIDERS, ...OAUTH_PROVIDERS, ...APIKEY_PROVIDERS, ...WEB_COOKIE_PROVIDERS };
 
 // Auth methods
 export const AUTH_METHODS = {

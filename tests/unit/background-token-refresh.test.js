@@ -44,6 +44,11 @@ describe("selectConnectionsNeedingRefresh", () => {
     expect(list[0].id).toBe("c1");
   });
 
+  it("ignores legacy local-Claude OAuth rows", async () => {
+    const { selectConnectionsNeedingRefresh } = await import("../../src/sse/services/backgroundTokenRefresh.js");
+    expect(selectConnectionsNeedingRefresh([conn({ provider: "claude" })], NOW)).toEqual([]);
+  });
+
   it("skips connection expiring in 2 hours", async () => {
     const { selectConnectionsNeedingRefresh } = await import(
       "../../src/sse/services/backgroundTokenRefresh.js"

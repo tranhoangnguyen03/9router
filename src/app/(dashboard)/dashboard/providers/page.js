@@ -14,6 +14,7 @@ import { getProviderIconSrc } from "@/shared/utils/providerIcon";
 import { OAUTH_PROVIDERS, APIKEY_PROVIDERS } from "@/shared/constants/config";
 import {
   FREE_PROVIDERS,
+  LOCAL_PROVIDERS,
   FREE_TIER_PROVIDERS,
   WEB_COOKIE_PROVIDERS,
   OPENAI_COMPATIBLE_PREFIX,
@@ -315,6 +316,7 @@ export default function ProvidersPage() {
     ),
     "oauth",
   );
+  const localEntries = Object.entries(LOCAL_PROVIDERS).filter(([, info]) => !info.hidden && matchSearch(info.name));
   const freeEntries = Object.entries(FREE_PROVIDERS)
     .filter(
       ([key, info]) =>
@@ -394,6 +396,7 @@ export default function ProvidersPage() {
   }
 
   const hasAnyResult =
+    localEntries.length > 0 ||
     oauthEntries.length > 0 ||
     freeEntries.length > 0 ||
     freeTierEntries.length > 0 ||
@@ -527,6 +530,17 @@ export default function ProvidersPage() {
           })}
         </div>
       </div>
+      )}
+
+      {localEntries.length > 0 && (
+        <section className="flex flex-col gap-4">
+          <h2 className="text-lg sm:text-xl font-semibold">Local Providers</h2>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+            {localEntries.map(([key, info]) => (
+              <ProviderCard key={key} providerId={key} provider={info} stats={{ total: 0 }} authType="local" />
+            ))}
+          </div>
+        </section>
       )}
 
       {/* Free Tier Providers */}
@@ -754,6 +768,8 @@ function ProviderCard({ providerId, provider, stats, authType, onToggle }) {
                       Disabled
                     </span>
                   </Badge>
+                ) : authType === "local" ? (
+                  <span className="text-text-muted">Check local login</span>
                 ) : isNoAuth ? (
                   <Badge variant="success" size="sm" dot>Ready</Badge>
                 ) : (

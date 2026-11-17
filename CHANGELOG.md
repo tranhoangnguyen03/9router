@@ -1,5 +1,8 @@
 # Unreleased
 
+## Features
+- **Local Claude SDK (experimental)**: replace `cc/...` subscription HTTP/OAuth routing with the official Agent SDK and unmodified CLI, client-owned tool handoff, isolated login/readiness, and explicit compatibility limits. Legacy Claude OAuth rows are retained but no longer used for routing, refresh, quota pings or reset requests. Live account acceptance is still required; see `docs/claude-agent-sdk.md`.
+
 ## Fixes
 - **Dashboard auth**: support an explicitly trusted single reverse-proxy IP so managed Caddy-to-Docker traffic uses separate visitor login-limit counters, while retaining peer-header sanitization and ignoring client-supplied IP overrides.
 

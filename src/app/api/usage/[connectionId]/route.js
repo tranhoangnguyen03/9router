@@ -6,7 +6,7 @@ import { getUsageForProvider } from "open-sse/services/usage.js";
 import { isUnrecoverableRefreshError } from "open-sse/services/tokenRefresh.js";
 import { getExecutor } from "open-sse/executors/index.js";
 import { resolveConnectionProxyConfig } from "@/lib/network/connectionProxy";
-import { USAGE_APIKEY_PROVIDERS } from "@/shared/constants/providers";
+import { LOCAL_PROVIDERS, USAGE_APIKEY_PROVIDERS } from "@/shared/constants/providers";
 import { isLeaseConnection } from "open-sse/services/minimaxCodeLease.js";
 
 // Detect auth-expired messages returned by usage providers instead of throwing
@@ -23,6 +23,7 @@ function isAuthExpiredMessage(usage) {
  * @returns Promise<{ connection, refreshed: boolean }>
  */
 export async function refreshAndUpdateCredentials(connection, force = false, proxyOptions = null) {
+  if (LOCAL_PROVIDERS[connection.provider]) return { connection, refreshed: false };
   // Re-read latest tokens: OpenAI rotates the refresh token on every refresh, and
   // refreshing with a stale snapshot (reuse) revokes the whole session → account logout.
   const latest = connection.id ? await getProviderConnectionById(connection.id) : null;
@@ -142,6 +143,10 @@ export async function GET(request, { params }) {
     connection = await getProviderConnectionById(connectionId);
     if (!connection) {
       return Response.json({ error: "Connection not found" }, { status: 404 });
+    }
+
+    if (LOCAL_PROVIDERS[connection.provider]) {
+      return Response.json({ message: "Usage and authentication are managed by the local Claude Code CLI, not legacy OAuth rows." });
     }
 
     // Allow OAuth connections, plus whitelisted apikey providers (glm/minimax/kiro/...)

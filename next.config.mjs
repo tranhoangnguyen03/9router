@@ -28,7 +28,7 @@ const nextConfig = {
   // undici must stay external too: webpack's vendored copy drops the per-request
   // `dispatcher` connect options (ecdhCurve) — the built server then RSTs on
   // DPI-shaped networks while the dev server (real undici) passes.
-  serverExternalPackages: ["better-sqlite3", "sql.js", "node:sqlite", "bun:sqlite", "open", "@aws-sdk/credential-providers", "wreq-js", "undici"],
+  serverExternalPackages: ["better-sqlite3", "sql.js", "node:sqlite", "bun:sqlite", "open", "@aws-sdk/credential-providers", "wreq-js", "undici", "@anthropic-ai/claude-agent-sdk", "@modelcontextprotocol/sdk"],
   turbopack: {
     root: tracingRoot
   },
@@ -36,7 +36,7 @@ const nextConfig = {
   outputFileTracingIncludes: {
     // serverExternalPackages keeps undici external; dynamic import("undici")
     // alone doesn't pull it into the trace, so force-ship the real package.
-    "*": ["./node_modules/undici/**/*"]
+    "*": ["./node_modules/undici/**/*", "./node_modules/@anthropic-ai/claude-agent-sdk*/**/*"]
   },
   outputFileTracingExcludes: {
     "*": ["./gitbook/**/*"]

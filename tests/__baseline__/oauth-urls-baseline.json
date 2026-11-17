@@ -9,7 +9,6 @@
       "auth": "https://auth.openai.com/oauth/authorize"
     },
     "anthropic": {
-      "token": "https://api.anthropic.com/v1/oauth/token",
       "auth": "https://api.anthropic.com/v1/oauth/authorize"
     },
     "iflow": {
@@ -23,7 +22,6 @@
     }
   },
   "tokenUrls": {
-    "claude": "https://api.anthropic.com/v1/oauth/token",
     "codex": "https://auth.openai.com/oauth/token",
     "iflow": "https://iflow.cn/oauth/token",
     "kiro": "https://prod.us-east-1.auth.desktop.kiro.dev/refreshToken",
@@ -42,7 +40,6 @@
     "grok-cli": "https://auth.x.ai/oauth2/token"
   },
   "clientIds": {
-    "claude": "9d1c250a-e61b-44d9-88ed-5944d1962f5e",
     "codex": "app_EMoamEEZ73f0CkXaXp7hrann",
     "iflow": "10009311001",
     "kimi": "17e5f671-d194-4dfb-9706-5516cb48c098",

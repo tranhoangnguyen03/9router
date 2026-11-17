@@ -2,6 +2,7 @@
 // Fail-open everywhere: tick errors and per-connection failures never kill the interval.
 
 import * as log from "../utils/logger.js";
+import { PROVIDERS } from "open-sse/providers/index.js";
 import { getRefreshLeadMs } from "open-sse/services/tokenRefresh.js";
 import { getCredentialExpiryMs } from "open-sse/services/oauthCredentialManager.js";
 
@@ -50,7 +51,7 @@ export function selectConnectionsNeedingRefresh(connections, nowMs = Date.now())
 
   const out = [];
   for (const conn of connections) {
-    if (!conn) continue;
+    if (!conn || PROVIDERS[conn.provider]?.noAuth) continue;
 
     const authType = String(conn.authType || "").toLowerCase().replace(/_/g, "");
     if (authType !== "oauth") continue;
