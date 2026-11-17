@@ -52,7 +52,7 @@ npx vitest run unit/claude-sdk*.test.js unit/background-token-refresh.test.js un
 
 The tests cover translated parallel results, sequential rounds, completed-message fallback, cancellation, expiry, SDK errors, request controls, readiness and legacy-token isolation. Protocol integration tests use the **real SDK and real MCP transport** with an offline CLI fixture. They require no account and do not establish live model compatibility.
 
-CI also builds the standalone server and checks the packaged native binary and missing-login behavior. Builds/tests must use a temporary `DATA_DIR` (and an isolated `HOME` for live CLI checks); never point acceptance runs at production data.
+CI also builds the standalone server, runs `node scripts/check-claude-sdk-standalone.mjs` against its real HTTP endpoints (Claude/OpenAI, JSON/SSE parallel handoff), and checks the packaged native binary and missing-login behavior. Builds/tests must use a temporary `DATA_DIR` (and an isolated `HOME` for live CLI checks); never point acceptance runs at production data.
 
 Before release, complete real local acceptance with your own login: one JSON request, SSE, sequential/parallel client tools, repeated turns, abort, slow reader, expiry/restart, and account usage/billing category. No successful live subscription run is claimed by offline tests.
 

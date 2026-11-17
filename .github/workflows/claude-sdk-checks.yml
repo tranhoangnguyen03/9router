@@ -29,6 +29,8 @@ jobs:
         run: npx vitest run unit/openai-to-claude.test.js -t openaiToClaudeRequest --reporter=verbose
       - name: Build Next.js standalone server
         run: npm run build
+      - name: Compiled HTTP tool handoff (offline CLI, real SDK and MCP)
+        run: node scripts/check-claude-sdk-standalone.mjs
       - name: Verify standalone SDK binary and missing-login handling
         working-directory: .next/standalone
         env:
