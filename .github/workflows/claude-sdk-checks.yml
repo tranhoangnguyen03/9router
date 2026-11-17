@@ -9,7 +9,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
-      DATA_DIR: ${{ runner.temp }}/9router-sdk-data
+      DATA_DIR: /tmp/9router-sdk-data
       DISABLE_BACKGROUND_TOKEN_REFRESH: "1"
       NEXT_TELEMETRY_DISABLED: "1"
     steps:
